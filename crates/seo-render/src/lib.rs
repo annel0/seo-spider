@@ -32,6 +32,18 @@ pub struct RenderConfig {
     pub third_party_timeout: Option<Duration>,
     /// Skip the tracker and ad hosts of obscura's built-in list.
     pub block_trackers: bool,
+    /// One subresource cache for all render threads, keeping scripts,
+    /// styles and fonts for the whole crawl unless they say `no-store`, so a
+    /// site's bundle is downloaded once, not once per page.
+    pub cache_static: bool,
+    /// Size of that cache.
+    pub cache_mb: usize,
+    /// GET fetch()/XHR responses are reused for this long across pages.
+    pub fetch_cache_ttl: Option<Duration>,
+    /// IntersectionObserver sees every target in the viewport, as with the
+    /// very tall viewport search engines render with: lazy content loads, and
+    /// no layout is computed to measure targets.
+    pub intersection_full_viewport: bool,
 }
 
 impl Default for RenderConfig {
@@ -45,6 +57,10 @@ impl Default for RenderConfig {
             allow_private_network: false,
             third_party_timeout: Some(Duration::from_secs(3)),
             block_trackers: true,
+            cache_static: true,
+            cache_mb: 256,
+            fetch_cache_ttl: Some(Duration::from_secs(120)),
+            intersection_full_viewport: true,
         }
     }
 }
@@ -108,6 +124,12 @@ impl RenderPool {
         let defaults = [
             ("OBSCURA_THIRD_PARTY_TIMEOUT_MS", config.third_party_timeout.map(|limit| limit.as_millis().to_string())),
             ("OBSCURA_BLOCK_TRACKERS", config.block_trackers.then(|| "1".to_string())),
+            ("OBSCURA_RESOURCE_CACHE_SHARED", config.cache_static.then(|| "1".to_string())),
+            // A crawl is a snapshot: static files stay valid for its length.
+            ("OBSCURA_RESOURCE_CACHE_MIN_TTL_MS", config.cache_static.then(|| (6 * 3600 * 1000).to_string())),
+            ("OBSCURA_RESOURCE_CACHE_MB", config.cache_static.then(|| config.cache_mb.to_string())),
+            ("OBSCURA_FETCH_CACHE_TTL_MS", config.fetch_cache_ttl.map(|ttl| ttl.as_millis().to_string())),
+            ("OBSCURA_INTERSECTION_FULL_VIEWPORT", config.intersection_full_viewport.then(|| "1".to_string())),
         ];
         for (key, value) in defaults {
             if let (None, Some(value)) = (std::env::var_os(key), value) {

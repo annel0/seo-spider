@@ -213,6 +213,16 @@ pub struct RenderSettings {
     /// Stall limit for requests to other sites; `None` keeps obscura's 10 s.
     pub third_party_timeout_ms: Option<u64>,
     pub block_trackers: bool,
+    /// One cache of scripts, styles and fonts for all render threads for the
+    /// whole crawl (`no-store` is honoured).
+    pub cache_static: bool,
+    pub cache_mb: usize,
+    /// Reuse GET fetch()/XHR responses across pages for this long; `None`
+    /// fetches every time.
+    pub fetch_cache_ttl_ms: Option<u64>,
+    /// IntersectionObserver sees every target in the viewport (lazy content
+    /// loads, no layout to measure targets).
+    pub intersection_full_viewport: bool,
     /// Let pages reach loopback and private addresses.
     pub allow_private_network: bool,
     /// Replace a render thread's page after this many renders.
@@ -232,6 +242,10 @@ impl Default for RenderSettings {
             user_agent: None,
             third_party_timeout_ms: render.third_party_timeout.map(|limit| limit.as_millis() as u64),
             block_trackers: render.block_trackers,
+            cache_static: render.cache_static,
+            cache_mb: render.cache_mb,
+            fetch_cache_ttl_ms: render.fetch_cache_ttl.map(|ttl| ttl.as_millis() as u64),
+            intersection_full_viewport: render.intersection_full_viewport,
             allow_private_network: false,
             recycle_after: render.recycle_after,
         }
@@ -254,6 +268,10 @@ impl RenderSettings {
             allow_private_network: self.allow_private_network,
             third_party_timeout: self.third_party_timeout_ms.map(Duration::from_millis),
             block_trackers: self.block_trackers,
+            cache_static: self.cache_static,
+            cache_mb: self.cache_mb,
+            fetch_cache_ttl: self.fetch_cache_ttl_ms.map(Duration::from_millis),
+            intersection_full_viewport: self.intersection_full_viewport,
         }
     }
 }

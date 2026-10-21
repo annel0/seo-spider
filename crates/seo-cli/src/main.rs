@@ -4,6 +4,7 @@
 //! TOML file (`--config`) merged over it, then command-line flags.
 
 mod export;
+mod report;
 
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -32,6 +33,16 @@ enum Command {
     Export(ExportArgs),
     /// Write the documents a crawl kept (`store.raw_html`, `store.rendered_html`) as files.
     Bodies(BodiesArgs),
+    /// Summarise a crawl: statuses, render timings, console errors, failed requests.
+    Report(CheckArgs),
+    /// Pages whose rendered documents differ between two crawls.
+    Compare(CompareArgs),
+}
+
+#[derive(clap::Args)]
+struct CompareArgs {
+    first: PathBuf,
+    second: PathBuf,
 }
 
 #[derive(clap::Args)]
@@ -138,6 +149,16 @@ struct CrawlArgs {
     /// Let rendered pages load tracker and ad hosts.
     #[arg(long)]
     no_block_trackers: bool,
+    /// Download scripts and styles for every rendered page instead of once.
+    #[arg(long)]
+    no_render_cache: bool,
+    /// Reuse fetch()/XHR responses across rendered pages for this long, ms (0: never).
+    #[arg(long)]
+    fetch_cache_ttl_ms: Option<u64>,
+    /// Measure IntersectionObserver targets for real instead of treating
+    /// every target as visible (slower: needs layout).
+    #[arg(long)]
+    exact_intersection: bool,
     /// Let rendered pages reach loopback and private addresses. On by itself
     /// when a start URL is such an address.
     #[arg(long)]
@@ -217,6 +238,17 @@ fn main() -> Result<()> {
         Command::Check(args) => check(args),
         Command::Export(args) => export(args),
         Command::Bodies(args) => bodies(args),
+        Command::Report(args) => {
+            let store = Store::open(&args.db)?;
+            let crawl_id = crawl_id(&store, args.crawl)?;
+            report::report(&store, crawl_id)
+        }
+        Command::Compare(args) => {
+            let first = Store::open(&args.first)?;
+            let second = Store::open(&args.second)?;
+            let (first_id, second_id) = (crawl_id(&first, None)?, crawl_id(&second, None)?);
+            report::compare(&first, first_id, &second, second_id)
+        }
     }
 }
 
@@ -345,6 +377,13 @@ fn crawl_config(args: &CrawlArgs) -> Result<CrawlConfig> {
             None => {}
         }
         render.block_trackers &= !args.no_block_trackers;
+        render.cache_static &= !args.no_render_cache;
+        render.intersection_full_viewport &= !args.exact_intersection;
+        match args.fetch_cache_ttl_ms {
+            Some(0) => render.fetch_cache_ttl_ms = None,
+            Some(ttl) => render.fetch_cache_ttl_ms = Some(ttl),
+            None => {}
+        }
         // The renderer keeps obscura's browser user agent unless one is
         // given, so pages run the scripts a browser would get.
         if let Some(user_agent) = &args.user_agent {
