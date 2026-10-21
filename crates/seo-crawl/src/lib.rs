@@ -924,5 +924,9 @@ mod tests {
         assert!(!filters.allows(&url("https://e.com/shop/a"), true));
         assert!(filters.allows(&url("https://other.com/shop"), false));
         assert!(!filters.allows(&url("https://e.com/blog/?page=2"), true));
+        // Cloudflare's email placeholder is skipped unless a config drops it.
+        let defaults = Filters::new(&CrawlConfig::default()).unwrap();
+        assert!(!defaults.allows(&url("https://e.com/cdn-cgi/l/email-protection"), true));
+        assert!(defaults.allows(&url("https://e.com/contact"), true));
     }
 }

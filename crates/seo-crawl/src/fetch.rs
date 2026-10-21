@@ -84,7 +84,9 @@ pub async fn fetch(
     };
     let head = head && matches!(mode, BodyMode::None);
     let mut sent = send(if head { reqwest::Method::HEAD } else { reqwest::Method::GET }).await;
-    if head && sent.as_ref().is_ok_and(|response| matches!(response.status().as_u16(), 405 | 501)) {
+    // Servers that refuse HEAD say 405 or 501, but many answer it with an
+    // error a GET would not get: only a GET confirms a failure.
+    if head && sent.as_ref().is_ok_and(|response| response.status().as_u16() >= 400) {
         sent = send(reqwest::Method::GET).await;
     }
     let mut response = match sent {

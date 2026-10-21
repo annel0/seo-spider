@@ -61,7 +61,9 @@ impl Default for CrawlConfig {
             max_urls: 10_000,
             max_depth: None,
             include: Vec::new(),
-            exclude: Vec::new(),
+            // Cloudflare's email obfuscation: the link only becomes a
+            // mailto: once its script runs, and the placeholder is a 404.
+            exclude: vec!["/cdn-cgi/l/email-protection".into()],
             strip_params: Vec::new(),
             crawl_subdomains: false,
             follow_nofollow: false,
