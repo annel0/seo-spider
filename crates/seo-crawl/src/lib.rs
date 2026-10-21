@@ -262,6 +262,7 @@ pub async fn crawl(mut config: CrawlConfig, store: Store) -> Result<(Store, Craw
         Ok(())
     }
     .await;
+    let loop_done = Instant::now();
     let finished = writer.finish();
     // A writer that failed is why sending stopped; report its error first.
     let mut store = finished.context("store writer")?;
@@ -284,8 +285,16 @@ pub async fn crawl(mut config: CrawlConfig, store: Store) -> Result<(Store, Craw
             (base_id + index as i64, depth, in_sitemap.contains(&known.url), known.blocked)
         })
         .collect();
+    let states_done = Instant::now();
     store.set_crawl_states(&states)?;
+    let saved = Instant::now();
     store.finish_crawl(crawl_id)?;
+    tracing::info!(
+        drain_s = (states_done - loop_done).as_secs_f64(),
+        states_s = (saved - states_done).as_secs_f64(),
+        indexes_s = saved.elapsed().as_secs_f64(),
+        "finishing"
+    );
     summary.elapsed = started.elapsed();
     Ok((store, summary))
 }

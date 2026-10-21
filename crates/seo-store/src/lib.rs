@@ -104,8 +104,10 @@ CREATE TABLE IF NOT EXISTS issues (
 CREATE INDEX IF NOT EXISTS issues_code ON issues (crawl_id, code);
 "#;
 
-/// Indexes a crawl does not need while it writes: built once when it is
-/// finished instead of being kept up on every insert.
+/// Indexes for looking up the links to or from one URL. Nothing a crawl,
+/// its checks or a whole export does needs them (those read the table in
+/// one pass), and on 5.7 million links they take 10 s to build: they are
+/// built by whatever first asks a per-URL question.
 const READ_INDEXES: &str = r#"
 CREATE INDEX IF NOT EXISTS links_to ON links (crawl_id, to_url);
 CREATE INDEX IF NOT EXISTS links_from ON links (from_url_id);
@@ -275,10 +277,10 @@ impl Store {
             "UPDATE crawls SET finished_at = datetime('now') WHERE id = ?1",
             params![crawl_id],
         )?;
-        self.ensure_read_indexes()
+        Ok(())
     }
 
-    /// Builds the indexes exports and checks query by, if missing.
+    /// Builds the indexes for per-URL link lookups, if missing.
     pub fn ensure_read_indexes(&self) -> Result<()> {
         self.conn.execute_batch(READ_INDEXES).context("create indexes")?;
         Ok(())

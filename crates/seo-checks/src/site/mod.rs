@@ -8,6 +8,7 @@ mod linking;
 mod redirects;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use seo_page::{HttpInfo, PageFacts};
 use url::Url;
@@ -27,8 +28,10 @@ pub struct SiteHreflang {
 /// One outgoing link.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SiteLink {
-    /// Resolved, no fragment.
-    pub target: String,
+    /// Resolved, no fragment. Shared: a site's pages link to the same URLs
+    /// over and over, and a copy per link was most of what the site checks
+    /// held in memory.
+    pub target: Arc<str>,
     /// `rel=nofollow` on the link, or the whole page is nofollow.
     pub nofollow: bool,
     /// Leads to the same site (`www.` ignored). The rest are external links,
@@ -128,7 +131,7 @@ pub fn site_page(
                     .iter()
                     .filter(|link| !link.href.is_empty())
                     .map(|link| SiteLink {
-                        target: link.href.clone(),
+                        target: Arc::from(link.href.as_str()),
                         nofollow: link.nofollow || page_nofollow,
                         internal: urls::is_internal(&site, &link.href),
                     })

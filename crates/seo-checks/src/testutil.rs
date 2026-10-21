@@ -305,7 +305,7 @@ pub(crate) fn redirect(url: &str, to: &str) -> SitePage {
 }
 
 pub(crate) fn link(target: &str) -> SiteLink {
-    SiteLink { target: target.to_string(), nofollow: false, internal: true }
+    SiteLink { target: target.into(), nofollow: false, internal: true }
 }
 
 pub(crate) fn nofollow(target: &str) -> SiteLink {

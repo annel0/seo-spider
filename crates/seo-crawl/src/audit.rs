@@ -1,8 +1,11 @@
 //! Runs the check catalog over a finished crawl and stores the issues.
 
+use std::hash::BuildHasher;
+use std::sync::{Arc, Mutex};
+
 use anyhow::Result;
 use rayon::prelude::*;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 use seo_checks::{check_page, check_site, Issue, PageInput, SitePage};
 use seo_page::ExtractOptions;
 use seo_store::Store;
@@ -32,6 +35,30 @@ fn meaningful(code: &str, extracted: &ExtractOptions) -> bool {
     }
 }
 
+/// One copy of each link target for the site checks, shared by every link
+/// to it. Sharded so the parallel decoding seldom waits on a lock.
+struct Targets {
+    shards: Vec<Mutex<FxHashSet<Arc<str>>>>,
+}
+
+impl Targets {
+    fn new() -> Self {
+        Targets { shards: (0..64).map(|_| Mutex::default()).collect() }
+    }
+
+    fn share(&self, target: &Arc<str>) -> Arc<str> {
+        let shard = FxBuildHasher.hash_one(&**target) as usize % self.shards.len();
+        let mut known = self.shards[shard].lock().expect("targets lock");
+        match known.get(&**target) {
+            Some(shared) => shared.clone(),
+            None => {
+                known.insert(target.clone());
+                target.clone()
+            }
+        }
+    }
+}
+
 /// Checks every URL of the crawl, then the site as a whole, replacing the
 /// crawl's stored issues. Returns the number of issues.
 ///
@@ -43,6 +70,7 @@ pub fn run_checks(store: &mut Store, crawl_id: i64) -> Result<usize> {
     let mut ids = Vec::new();
     // What each page's facts were read with, for `meaningful`.
     let mut extracted: FxHashMap<i64, ExtractOptions> = FxHashMap::default();
+    let targets = Targets::new();
     let started = std::time::Instant::now();
     store.for_each_url_chunk(crawl_id, CHUNK, |chunk| {
         type Checked = (i64, Vec<Issue>, SitePage, Option<ExtractOptions>);
@@ -64,7 +92,10 @@ pub fn run_checks(store: &mut Store, crawl_id: i64) -> Result<usize> {
                     blocked_by_robots: stored.blocked_by_robots,
                 };
                 let page_issues = if stored.internal { check_page(&input) } else { Vec::new() };
-                let page = SitePage::from_input(&input).with_external(!stored.internal);
+                let mut page = SitePage::from_input(&input).with_external(!stored.internal);
+                for link in &mut page.links {
+                    link.target = targets.share(&link.target);
+                }
                 Ok(Some((stored.id, page_issues, page, stored.facts().map(|facts| facts.extracted))))
             })
             .collect::<Result<_>>()?;

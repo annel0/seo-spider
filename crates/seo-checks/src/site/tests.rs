@@ -460,7 +460,7 @@ fn site_page_reads_what_the_checks_need() {
     assert_eq!(page.hreflangs, [SiteHreflang { lang: "fr".into(), href: "https://example.com/fr".into() }]);
     assert!(page.text_hash.is_some());
 
-    let internal: Vec<_> = page.links.iter().filter(|l| l.internal).map(|l| l.target.as_str()).collect();
+    let internal: Vec<_> = page.links.iter().filter(|l| l.internal).map(|l| &*l.target).collect();
     assert_eq!(internal, ["https://www.example.com/other", "https://www.example.com/inner"]);
     let external = page.links.iter().find(|l| !l.internal).unwrap();
     assert!(external.nofollow);

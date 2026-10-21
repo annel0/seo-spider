@@ -73,6 +73,10 @@ pub trait Sink {
     /// Ends the table; returns its rows written.
     fn end(&mut self) -> Result<usize>;
     fn finish(self: Box<Self>) -> Result<()>;
+    /// Rows a table can hold; further rows are dropped.
+    fn max_rows(&self) -> Option<usize> {
+        None
+    }
 }
 
 /// XLSX holds at most this many rows per sheet.
@@ -436,7 +440,9 @@ fn links(store: &Store, crawl_id: i64, sink: &mut dyn Sink) -> Result<usize> {
          ORDER BY l.rowid
          LIMIT ?2",
     )?;
-    let mut rows = select.query(params![crawl_id, MAX_ROWS as i64])?;
+    // A negative LIMIT is none.
+    let limit = sink.max_rows().map_or(-1, |rows| rows as i64);
+    let mut rows = select.query(params![crawl_id, limit])?;
     while let Some(row) = rows.next()? {
         sink.row(&[
             Cell::Text(row.get(0)?),
@@ -583,6 +589,10 @@ impl XlsxSink {
 }
 
 impl Sink for XlsxSink {
+    fn max_rows(&self) -> Option<usize> {
+        Some(MAX_ROWS)
+    }
+
     fn begin(&mut self, name: &'static str, headers: &[&'static str]) -> Result<()> {
         let bold = self.bold.clone();
         let sheet = self.workbook.add_worksheet_with_constant_memory();

@@ -180,6 +180,9 @@ struct CrawlArgs {
     /// Do not store links as rows (keeps the database small).
     #[arg(long)]
     no_store_links: bool,
+    /// Skip the checks after the crawl (`seo-spider check` runs them later).
+    #[arg(long)]
+    no_checks: bool,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -445,9 +448,11 @@ fn crawl(args: CrawlArgs) -> Result<()> {
         summary.elapsed.as_secs_f64(),
         summary.urls as f64 / summary.elapsed.as_secs_f64().max(0.001),
     );
-    let checks_started = std::time::Instant::now();
-    let issues = seo_crawl::run_checks(&mut store, summary.crawl_id)?;
-    eprintln!("{issues} issues in {:.1} s", checks_started.elapsed().as_secs_f64());
+    if !args.no_checks {
+        let checks_started = std::time::Instant::now();
+        let issues = seo_crawl::run_checks(&mut store, summary.crawl_id)?;
+        eprintln!("{issues} issues in {:.1} s", checks_started.elapsed().as_secs_f64());
+    }
     eprintln!("database: {}", args.db.display());
     // Render threads hold V8 isolates; exiting without tearing them down is
     // faster and safe once the store is closed.
@@ -475,7 +480,6 @@ fn crawl_id(store: &Store, crawl: Option<i64>) -> Result<i64> {
 
 fn check(args: CheckArgs) -> Result<()> {
     let mut store = Store::open(&args.db)?;
-    store.ensure_read_indexes()?;
     let crawl_id = crawl_id(&store, args.crawl)?;
     let started = std::time::Instant::now();
     let issues = seo_crawl::run_checks(&mut store, crawl_id)?;
@@ -485,7 +489,6 @@ fn check(args: CheckArgs) -> Result<()> {
 
 fn export(args: ExportArgs) -> Result<()> {
     let store = Store::open(&args.db)?;
-    store.ensure_read_indexes()?;
     let crawl_id = crawl_id(&store, args.crawl)?;
     let mut sink: Box<dyn export::Sink> = match args.format {
         Format::Csv => Box::new(export::CsvSink::new(&args.out)?),
