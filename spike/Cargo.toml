@@ -1,0 +1,30 @@
+[package]
+name = "render-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Spike: obscura embedded as a library (one render thread per worker) fed by
+# spider's HTTP crawl. Built on the obscura-dev VM next to the fork checkout,
+# which must sit at ../../obscura.
+
+[dependencies]
+obscura-browser = { path = "../../obscura/crates/obscura-browser", features = ["render"] }
+spider = { version = "2.53", default-features = false, features = ["sync", "headers", "time", "reqwest_native_tls_native_roots"] }
+tokio = { version = "1", features = ["full"] }
+async-channel = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# obscura pins two crates to its vendored copies; a dependent workspace must
+# repeat the patches or it builds against the upstream versions.
+[patch.crates-io]
+taffy = { path = "../../obscura/vendor/taffy" }
+cosmic-text = { path = "../../obscura/vendor/cosmic-text" }
+
+# obscura's ops rely on unwinding to turn panics into errors instead of
+# aborting inside V8 frames.
+[profile.release]
+panic = "unwind"

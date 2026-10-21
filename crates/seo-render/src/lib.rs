@@ -1,0 +1,244 @@
+//! A pool of render workers on the embedded obscura engine.
+//!
+//! Each worker is an OS thread with its own current-thread runtime and one
+//! obscura `Page`, the way obscura's CDP server runs a connection. Pages are
+//! not `Send`, so URLs go in and results come out over channels. A page is
+//! replaced every `recycle_after` renders so per-page leaks cannot pile up.
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use obscura_browser::{BrowserContext, Page, WaitUntil};
+pub use obscura_browser::SettlePolicy;
+use serde::Serialize;
+use tokio::sync::oneshot;
+
+#[derive(Debug, Clone)]
+pub struct RenderConfig {
+    pub threads: usize,
+    /// When the content counts as settled after DOMContentLoaded.
+    pub settle: SettlePolicy,
+    /// Upper bound for the navigation itself (up to DOMContentLoaded).
+    pub navigation_timeout: Duration,
+    pub user_agent: Option<String>,
+    /// Replace a worker's page after this many renders.
+    pub recycle_after: usize,
+    /// Let pages reach loopback and private addresses. obscura blocks them
+    /// by default so a public page cannot probe the crawler's own network.
+    pub allow_private_network: bool,
+}
+
+impl Default for RenderConfig {
+    fn default() -> Self {
+        Self {
+            threads: 4,
+            settle: SettlePolicy::default(),
+            navigation_timeout: Duration::from_secs(30),
+            user_agent: None,
+            recycle_after: 200,
+            allow_private_network: false,
+        }
+    }
+}
+
+/// One subresource or script-initiated request the render made.
+#[derive(Debug, Clone, Serialize)]
+pub struct Resource {
+    pub url: String,
+    /// obscura's resource type: Document, Script, Stylesheet, Image, Fetch...
+    pub kind: String,
+    /// 0 when the request failed or was blocked.
+    pub status: u16,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Rendered {
+    pub url: String,
+    /// The document URL after JavaScript redirects.
+    pub final_url: String,
+    pub error: Option<String>,
+    /// Status of the main document response as the renderer saw it.
+    pub status: Option<u16>,
+    /// Serialised DOM after the content settled.
+    pub html: String,
+    pub dcl_ms: u64,
+    pub total_ms: u64,
+    /// The content went quiet before the budget ran out.
+    pub settled: bool,
+    pub load_fired: bool,
+    pub resources: Vec<Resource>,
+    /// Console messages of level error, including uncaught exceptions.
+    pub console_errors: Vec<String>,
+}
+
+struct Job {
+    url: String,
+    reply: oneshot::Sender<Rendered>,
+}
+
+/// A fixed set of render threads sharing one job queue.
+pub struct RenderPool {
+    jobs: async_channel::Sender<Job>,
+}
+
+impl RenderPool {
+    pub fn new(config: RenderConfig) -> Self {
+        // The crawler reads the DOM, not pixels: skip obscura's image and font
+        // preloading unless the environment asks for it.
+        for key in [
+            "OBSCURA_RENDER_RESOURCE_WARMUP_MS",
+            "OBSCURA_RENDER_RESOURCE_POST_SCRIPT_WARMUP_MS",
+            "OBSCURA_RENDER_RESOURCE_SETTLE_WARMUP_MS",
+        ] {
+            if std::env::var_os(key).is_none() {
+                std::env::set_var(key, "0");
+            }
+        }
+        if config.allow_private_network {
+            // Script fetch() reads the switch from the environment; page
+            // navigations take it from the context below.
+            std::env::set_var("OBSCURA_ALLOW_PRIVATE_NETWORK", "1");
+        }
+        let (tx, rx) = async_channel::unbounded();
+        for worker in 0..config.threads.max(1) {
+            spawn_worker(worker, rx.clone(), config.clone());
+        }
+        RenderPool { jobs: tx }
+    }
+
+    /// Renders `url` on the next free worker.
+    pub async fn render(&self, url: String) -> Rendered {
+        let (reply, rx) = oneshot::channel();
+        if self.jobs.send(Job { url: url.clone(), reply }).await.is_err() {
+            return Rendered::failed(url, "render pool is closed".into(), Instant::now());
+        }
+        rx.await
+            .unwrap_or_else(|_| Rendered::failed(url, "render worker stopped".into(), Instant::now()))
+    }
+}
+
+fn spawn_worker(worker: usize, jobs: async_channel::Receiver<Job>, config: RenderConfig) {
+    std::thread::Builder::new()
+        .name(format!("render-{worker}"))
+        .spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    tracing::error!(worker, %error, "render runtime failed to start");
+                    return;
+                }
+            };
+            let local = tokio::task::LocalSet::new();
+            local.block_on(&runtime, async move {
+                let context = Arc::new(BrowserContext::with_storage_and_network(
+                    format!("render-{worker}"),
+                    None,
+                    false,
+                    config.user_agent.clone(),
+                    None,
+                    config.allow_private_network,
+                ));
+                let mut page = new_page(worker, &context);
+                let mut rendered_on_page = 0usize;
+                while let Ok(job) = jobs.recv().await {
+                    if rendered_on_page >= config.recycle_after {
+                        page = new_page(worker, &context);
+                        rendered_on_page = 0;
+                    }
+                    let rendered = render(&mut page, &job.url, &config).await;
+                    rendered_on_page += 1;
+                    if rendered.error.is_some() {
+                        // A failed or abandoned navigation can leave the page
+                        // mid-load; start the next job on a fresh one.
+                        page = new_page(worker, &context);
+                        rendered_on_page = 0;
+                    }
+                    let _ = job.reply.send(rendered);
+                }
+            });
+        })
+        .expect("spawn render thread");
+}
+
+fn new_page(worker: usize, context: &Arc<BrowserContext>) -> Page {
+    let page = Page::new(format!("render-{worker}"), context.clone());
+    page.set_console_messages_enabled(true);
+    page
+}
+
+async fn render(page: &mut Page, url: &str, config: &RenderConfig) -> Rendered {
+    let started = Instant::now();
+    let navigation = tokio::time::timeout(
+        config.navigation_timeout,
+        page.navigate_with_wait(url, WaitUntil::DomContentLoaded),
+    )
+    .await;
+    let dcl_ms = started.elapsed().as_millis() as u64;
+    match navigation {
+        Err(_) => return Rendered::failed(url.to_string(), "navigation timed out".into(), started),
+        Ok(Err(error)) => return Rendered::failed(url.to_string(), error.to_string(), started),
+        Ok(Ok(())) => {}
+    }
+    let settle = page.settle_content(config.settle).await;
+    let html = page
+        .with_dom(|dom| match dom.query_selector("html") {
+            Ok(Some(root)) => dom.outer_html(root),
+            _ => dom.inner_html(dom.document()),
+        })
+        .unwrap_or_default();
+    let resources = page
+        .network_events
+        .iter()
+        .map(|event| Resource {
+            url: event.url.clone(),
+            kind: event.resource_type.clone(),
+            status: event.status,
+            error: event.error_text.clone(),
+        })
+        .collect::<Vec<_>>();
+    let status = page
+        .network_events
+        .iter()
+        .find(|event| event.resource_type == "Document")
+        .map(|event| event.status)
+        .filter(|status| *status != 0);
+    let console_errors = page
+        .take_pending_console_messages()
+        .into_iter()
+        .filter(|message| message.starts_with("[error]"))
+        .map(|message| message.trim_start_matches("[error]").trim().to_string())
+        .collect();
+    Rendered {
+        url: url.to_string(),
+        final_url: page.url_string(),
+        error: None,
+        status,
+        html,
+        dcl_ms,
+        total_ms: started.elapsed().as_millis() as u64,
+        settled: settle.settled,
+        load_fired: settle.load_fired,
+        resources,
+        console_errors,
+    }
+}
+
+impl Rendered {
+    fn failed(url: String, error: String, started: Instant) -> Self {
+        let elapsed = started.elapsed().as_millis() as u64;
+        Rendered {
+            final_url: url.clone(),
+            url,
+            error: Some(error),
+            status: None,
+            html: String::new(),
+            dcl_ms: elapsed,
+            total_ms: elapsed,
+            settled: false,
+            load_fired: false,
+            resources: Vec::new(),
+            console_errors: Vec::new(),
+        }
+    }
+}

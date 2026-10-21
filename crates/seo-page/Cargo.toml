@@ -1,0 +1,12 @@
+[package]
+name = "seo-page"
+description = "Page model and HTML extraction shared by raw and rendered documents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+scraper = { workspace = true }
+url = { workspace = true }
+serde = { workspace = true }
+xxhash-rust = { workspace = true }

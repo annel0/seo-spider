@@ -1,0 +1,58 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/seo-page",
+    "crates/seo-checks",
+    "crates/seo-store",
+    "crates/seo-render",
+    "crates/seo-crawl",
+    "crates/seo-cli",
+]
+# The spike that settled the architecture stays a separate package.
+exclude = ["spike"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+seo-page = { path = "crates/seo-page" }
+seo-checks = { path = "crates/seo-checks" }
+seo-store = { path = "crates/seo-store" }
+seo-render = { path = "crates/seo-render" }
+seo-crawl = { path = "crates/seo-crawl" }
+# The obscura fork (annel0/obscura, branch fix/chrome-parity) checked out
+# next to this repository.
+obscura-browser = { path = "../obscura/crates/obscura-browser", features = ["render"] }
+# Same version and features as obscura-net, so both share one build.
+reqwest = { version = "0.12", default-features = false, features = ["gzip", "brotli", "deflate", "rustls-tls", "http2"] }
+texting_robots = "0.2"
+encoding_rs = "0.8"
+flate2 = "1"
+tokio = { version = "1", features = ["full"] }
+async-channel = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "1"
+url = "2"
+scraper = "0.20"
+rusqlite = { version = "0.32", features = ["bundled"] }
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+rust_xlsxwriter = "0.79"
+csv = "1"
+
+# obscura pins two crates to its vendored copies; every workspace that builds
+# obscura must repeat the patches or it compiles against the upstream crates.
+[patch.crates-io]
+taffy = { path = "../obscura/vendor/taffy" }
+cosmic-text = { path = "../obscura/vendor/cosmic-text" }
+
+# obscura's ops rely on unwinding to turn panics into errors instead of
+# aborting inside V8 frames.
+[profile.release]
+panic = "unwind"

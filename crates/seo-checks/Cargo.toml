@@ -1,0 +1,15 @@
+[package]
+name = "seo-checks"
+description = "Check catalog: per-page and cross-page SEO issues"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+seo-page = { workspace = true }
+url = { workspace = true }
+serde = { workspace = true }
+# BCP 47 syntax of `lang` / `hreflang` values and the ISO 639 language table;
+# both are small, pure Rust and do no I/O.
+oxilangtag = "0.1"
+isolang = "2"

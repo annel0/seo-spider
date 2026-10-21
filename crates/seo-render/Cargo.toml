@@ -1,0 +1,14 @@
+[package]
+name = "seo-render"
+description = "Render pool on the embedded obscura engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+obscura-browser = { workspace = true }
+tokio = { workspace = true }
+async-channel = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
