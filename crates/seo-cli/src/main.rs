@@ -476,13 +476,14 @@ fn export(args: ExportArgs) -> Result<()> {
     let store = Store::open(&args.db)?;
     store.ensure_read_indexes()?;
     let crawl_id = crawl_id(&store, args.crawl)?;
-    let tables = export::tables(&store, crawl_id)?;
-    match args.format {
-        Format::Csv => export::write_csv(&tables, &args.out)?,
-        Format::Xlsx => export::write_xlsx(&tables, &args.out)?,
-    }
-    for table in &tables {
-        eprintln!("{}: {} rows", table.name, table.rows.len());
+    let mut sink: Box<dyn export::Sink> = match args.format {
+        Format::Csv => Box::new(export::CsvSink::new(&args.out)?),
+        Format::Xlsx => Box::new(export::XlsxSink::new(&args.out)),
+    };
+    let written = export::export(&store, crawl_id, sink.as_mut())?;
+    sink.finish()?;
+    for (tab, rows, seconds) in written {
+        eprintln!("{tab}: {rows} rows in {seconds:.1} s");
     }
     eprintln!("written: {}", args.out.display());
     Ok(())
