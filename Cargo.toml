@@ -18,6 +18,7 @@ edition = "2021"
 license = "MIT"
 
 [workspace.dependencies]
+mimalloc = { version = "0.1", default-features = false }
 seo-page = { path = "crates/seo-page" }
 seo-checks = { path = "crates/seo-checks" }
 seo-store = { path = "crates/seo-store" }
