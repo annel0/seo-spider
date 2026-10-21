@@ -60,6 +60,20 @@ impl ExtractOptions {
     }
 }
 
+/// What a render left besides the DOM, for the JavaScript checks.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenderSummary {
+    /// The render failed (navigation error or timeout): no rendered DOM.
+    pub error: Option<String>,
+    /// The content went quiet before the settle budget ran out.
+    pub settled: bool,
+    pub console_errors: usize,
+    pub first_console_error: Option<String>,
+    /// Requests the page made that got an error status or no response.
+    pub failed_requests: usize,
+    pub first_failed_request: Option<String>,
+}
+
 /// Which document the facts were read from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Source {

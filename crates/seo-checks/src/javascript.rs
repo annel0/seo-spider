@@ -20,6 +20,7 @@ const RATIO_DENOMINATOR: usize = 2;
 const MIN_EXTRA_WORDS: usize = 50;
 
 pub(crate) fn check(input: &PageInput, out: &mut Vec<Issue>) {
+    render(input, out);
     let (Some(raw), Some(rendered)) = (input.raw, input.rendered) else {
         return;
     };
@@ -60,6 +61,33 @@ pub(crate) fn check(input: &PageInput, out: &mut Vec<Issue>) {
     directives(input, raw, rendered, out);
     links(raw, rendered, out);
     content(raw, rendered, out);
+}
+
+/// How the render itself went: failed, never settled, threw, or lost
+/// requests. A failed render reports only that.
+fn render(input: &PageInput, out: &mut Vec<Issue>) {
+    let Some(render) = input.render else { return };
+    if let Some(error) = &render.error {
+        out.push(Issue::with_detail("js_render_error", urls::clip(error, 120)));
+        return;
+    }
+    if !render.settled {
+        out.push(Issue::new("js_render_timeout"));
+    }
+    if render.console_errors > 0 {
+        let first = render.first_console_error.as_deref().unwrap_or("");
+        out.push(Issue::with_detail(
+            "js_console_errors",
+            format!("{}: {}", render.console_errors, urls::clip(first, 120)),
+        ));
+    }
+    if render.failed_requests > 0 {
+        let first = render.first_failed_request.as_deref().unwrap_or("");
+        out.push(Issue::with_detail(
+            "js_failed_requests",
+            format!("{}: {}", render.failed_requests, urls::clip(first, 120)),
+        ));
+    }
 }
 
 fn first_canonical(facts: &PageFacts) -> Option<&str> {
@@ -148,6 +176,25 @@ mod tests {
 
     const CANONICAL: &str = r#"<link rel="canonical" href="https://example.com/page">"#;
     const OTHER_CANONICAL: &str = r#"<link rel="canonical" href="https://example.com/other">"#;
+
+    #[test]
+    fn render_problems_are_reported_from_the_summary() {
+        let mut fixture = page(Doc::good(), Doc::good());
+        fixture.render = Some(seo_page::RenderSummary { settled: true, ..Default::default() });
+        assert!(js_codes(&fixture).is_empty());
+        fixture.render = Some(seo_page::RenderSummary {
+            settled: false,
+            console_errors: 2,
+            first_console_error: Some("TypeError: x is undefined".into()),
+            failed_requests: 1,
+            first_failed_request: Some("404 https://example.com/app.js".into()),
+            ..Default::default()
+        });
+        assert_eq!(js_codes(&fixture), ["js_render_timeout", "js_console_errors", "js_failed_requests"]);
+        let mut failed = Fixture::good();
+        failed.render = Some(seo_page::RenderSummary { error: Some("navigation timed out".into()), ..Default::default() });
+        assert_eq!(js_codes(&failed), ["js_render_error"]);
+    }
 
     #[test]
     fn identical_documents_have_no_javascript_issues() {

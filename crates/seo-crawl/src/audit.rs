@@ -57,6 +57,7 @@ pub fn run_checks(store: &mut Store, crawl_id: i64) -> Result<usize> {
                     facts: stored.facts(),
                     raw: stored.raw.as_ref(),
                     rendered: stored.rendered.as_ref(),
+                    render: stored.render.as_ref(),
                     // Pages no click reaches have no depth; the orphan check covers them.
                     depth: stored.depth.unwrap_or(0),
                     in_sitemap: stored.in_sitemap,

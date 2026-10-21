@@ -25,6 +25,8 @@ pub struct PageInput<'a> {
     /// Facts read from the DOM after scripts ran. With `raw` it feeds the
     /// JavaScript tab; the tab is skipped unless both are present.
     pub rendered: Option<&'a PageFacts>,
+    /// What the render left besides the DOM, when the page was rendered.
+    pub render: Option<&'a seo_page::RenderSummary>,
     /// Clicks from the start URL.
     pub depth: u32,
     pub in_sitemap: bool,

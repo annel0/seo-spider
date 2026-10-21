@@ -6,7 +6,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
-use seo_page::{HttpInfo, PageFacts};
+use seo_page::{HttpInfo, PageFacts, RenderSummary};
 
 const SCHEMA: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -149,6 +149,7 @@ pub struct StoredUrl {
     pub blocked_by_robots: bool,
     pub raw: Option<PageFacts>,
     pub rendered: Option<PageFacts>,
+    pub render: Option<RenderSummary>,
 }
 
 impl StoredUrl {
@@ -163,14 +164,47 @@ pub struct EncodedUrl {
     pub url: StoredUrl,
     pub raw: Option<Vec<u8>>,
     pub rendered: Option<Vec<u8>>,
+    /// (error, settled, console errors JSON, resources JSON) of the render.
+    pub render: Option<(Option<String>, bool, String, String)>,
 }
 
 impl EncodedUrl {
     pub fn decode(self) -> Result<StoredUrl> {
-        let EncodedUrl { mut url, raw, rendered } = self;
+        let EncodedUrl { mut url, raw, rendered, render } = self;
         url.raw = raw.as_deref().map(decode_facts).transpose()?;
         url.rendered = rendered.as_deref().map(decode_facts).transpose()?;
+        url.render = render.map(|(error, settled, console, resources)| render_summary(error, settled, &console, &resources));
         Ok(url)
+    }
+}
+
+/// A stored render record as the checks read it. A request failed when it
+/// got an error status, or no response for a reason other than a block (a
+/// tracker the crawl chose not to load is not the page's failure).
+fn render_summary(error: Option<String>, settled: bool, console: &str, resources: &str) -> RenderSummary {
+    let console: Vec<String> = serde_json::from_str(console).unwrap_or_default();
+    let resources: Vec<serde_json::Value> = serde_json::from_str(resources).unwrap_or_default();
+    let failed: Vec<&serde_json::Value> = resources
+        .iter()
+        .filter(|resource| {
+            let status = resource["status"].as_u64().unwrap_or(0);
+            let error = resource["error"].as_str();
+            status >= 400 || (status == 0 && error.is_some_and(|error| !error.to_ascii_lowercase().contains("block")))
+        })
+        .collect();
+    RenderSummary {
+        error,
+        settled,
+        console_errors: console.len(),
+        first_console_error: console.first().map(|error| error.lines().next().unwrap_or("").chars().take(300).collect()),
+        failed_requests: failed.len(),
+        first_failed_request: failed.first().map(|resource| {
+            format!(
+                "{} {}",
+                resource["status"].as_u64().unwrap_or(0),
+                resource["url"].as_str().unwrap_or("").chars().take(300).collect::<String>()
+            )
+        }),
     }
 }
 
@@ -435,10 +469,12 @@ impl Store {
     ) -> Result<()> {
         let mut select = self.conn.prepare(
             "SELECT u.id, u.url, u.status, u.location, u.content_type, u.ttfb_ms, u.size, u.error, u.headers,
-                    u.depth, u.in_sitemap, u.blocked_by_robots, u.internal, raw.data, rendered.data
+                    u.depth, u.in_sitemap, u.blocked_by_robots, u.internal, raw.data, rendered.data,
+                    r.url_id, r.error, r.settled, r.console_errors, r.resources
              FROM urls u
              LEFT JOIN facts raw ON raw.url_id = u.id AND raw.source = 'raw'
              LEFT JOIN facts rendered ON rendered.url_id = u.id AND rendered.source = 'rendered'
+             LEFT JOIN renders r ON r.url_id = u.id
              WHERE u.crawl_id = ?1 ORDER BY u.id",
         )?;
         let mut rows = select.query(params![crawl_id])?;
@@ -464,9 +500,14 @@ impl Store {
                     blocked_by_robots: row.get(11)?,
                     raw: None,
                     rendered: None,
+                    render: None,
                 },
                 raw: row.get(13)?,
                 rendered: row.get(14)?,
+                render: match row.get::<_, Option<i64>>(15)? {
+                    Some(_) => Some((row.get(16)?, row.get(17)?, row.get(18)?, row.get(19)?)),
+                    None => None,
+                },
             });
             if batch.len() >= chunk {
                 each(std::mem::replace(&mut batch, Vec::with_capacity(chunk)))?;
