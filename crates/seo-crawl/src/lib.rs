@@ -59,6 +59,7 @@ pub async fn crawl(config: CrawlConfig, store: Store) -> Result<(Store, CrawlSum
         timeout: config.http.timeout(),
         concurrency: config.http.concurrency,
         headers: &config.http.headers,
+        cookies: config.http.cookies,
     })?;
     let crawl_id = store.start_crawl(config.start_urls[0].as_str(), &serde_json::to_string(&config)?)?;
     let base_id = store.next_url_id()?;
@@ -78,7 +79,16 @@ pub async fn crawl(config: CrawlConfig, store: Store) -> Result<(Store, CrawlSum
         http_slots: Semaphore::new(concurrency),
         external_slots: Semaphore::new(concurrency),
         external_timeout: config.http.timeout().min(config.http.external_timeout()),
-        pacer: config.http.max_rps.filter(|rps| *rps > 0.0).map(Pacer::new),
+        pacer: {
+            // The slower of max_rps and robots.txt's Crawl-delay.
+            let from_rps = config.http.max_rps.filter(|rps| *rps > 0.0).map(|rps| Duration::from_secs_f64(1.0 / rps));
+            let from_robots = config.respect_robots.then(|| robots.crawl_delay(&config.start_urls[0])).flatten();
+            if let Some(delay) = from_robots {
+                tracing::info!(delay_s = delay.as_secs_f64(), "robots.txt Crawl-delay");
+            }
+            from_rps.into_iter().chain(from_robots).max().map(Pacer::new)
+        },
+        head_for_status: config.http.head_for_status,
         retries: config.http.retries,
         body: match config.fetch {
             FetchLevel::Status => fetch::BodyMode::None,
@@ -280,6 +290,7 @@ struct Ctx {
     external_slots: Semaphore,
     external_timeout: Duration,
     pacer: Option<Pacer>,
+    head_for_status: bool,
     body: fetch::BodyMode,
     /// Extra attempts for a request that failed in a way worth retrying.
     retries: u32,
@@ -332,18 +343,15 @@ fn retry_delay(http: &HttpInfo, internal: bool, attempt: u32) -> Option<Duration
     Some(after.unwrap_or(backoff))
 }
 
-/// Spaces requests to the site `1 / max_rps` apart.
+/// Spaces requests to the site an interval apart: max_rps or robots.txt Crawl-delay.
 struct Pacer {
     interval: Duration,
     next: std::sync::Mutex<tokio::time::Instant>,
 }
 
 impl Pacer {
-    fn new(max_rps: f64) -> Self {
-        Pacer {
-            interval: Duration::from_secs_f64(1.0 / max_rps),
-            next: std::sync::Mutex::new(tokio::time::Instant::now()),
-        }
+    fn new(interval: Duration) -> Self {
+        Pacer { interval, next: std::sync::Mutex::new(tokio::time::Instant::now()) }
     }
 
     async fn pace(&self) {
@@ -431,7 +439,7 @@ async fn process(ctx: Arc<Ctx>, item: Item) -> Outcome {
                     pacer.pace().await;
                 }
             }
-            let fetched = fetch::fetch(&ctx.client, &item.url, mode, timeout).await;
+            let fetched = fetch::fetch(&ctx.client, &item.url, mode, timeout, ctx.head_for_status).await;
             // External URLs are only retried after a network failure: a
             // third party answering 5xx is the answer worth reporting.
             let retries = if item.internal { ctx.retries } else { ctx.retries.min(1) };

@@ -60,6 +60,17 @@ impl Robots {
         }
     }
 
+    /// The `Crawl-delay` robots.txt asks of the agent at the URL's origin.
+    pub fn crawl_delay(&self, url: &Url) -> Option<std::time::Duration> {
+        match self.by_origin.get(&url.origin().ascii_serialization()) {
+            Some(Some(robot)) => robot
+                .delay
+                .filter(|seconds| *seconds > 0.0)
+                .map(|seconds| std::time::Duration::from_secs_f32(seconds.min(60.0))),
+            _ => None,
+        }
+    }
+
     /// `Sitemap:` lines of the origin's robots.txt.
     pub fn sitemaps(&self, url: &Url) -> Vec<String> {
         match self.by_origin.get(&url.origin().ascii_serialization()) {

@@ -27,7 +27,7 @@ seo-crawl = { path = "crates/seo-crawl" }
 # next to this repository.
 obscura-browser = { path = "../obscura/crates/obscura-browser", features = ["render"] }
 # Same version and features as obscura-net, so both share one build.
-reqwest = { version = "0.12", default-features = false, features = ["gzip", "brotli", "deflate", "rustls-tls", "http2"] }
+reqwest = { version = "0.12", default-features = false, features = ["gzip", "brotli", "deflate", "rustls-tls", "http2", "cookies"] }
 texting_robots = "0.2"
 encoding_rs = "0.8"
 flate2 = "1"

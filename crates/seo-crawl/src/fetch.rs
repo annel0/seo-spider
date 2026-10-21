@@ -12,6 +12,8 @@ pub struct ClientOptions<'a> {
     pub timeout: Duration,
     pub concurrency: usize,
     pub headers: &'a std::collections::BTreeMap<String, String>,
+    /// Keep the cookies responses set, for the crawl's length.
+    pub cookies: bool,
 }
 
 pub fn client(options: &ClientOptions<'_>) -> anyhow::Result<Client> {
@@ -31,6 +33,7 @@ pub fn client(options: &ClientOptions<'_>) -> anyhow::Result<Client> {
         .redirect(reqwest::redirect::Policy::none())
         .user_agent(options.user_agent)
         .default_headers(headers)
+        .cookie_store(options.cookies)
         .timeout(options.timeout)
         .connect_timeout(Duration::from_secs(10))
         .pool_max_idle_per_host(options.concurrency)
@@ -59,15 +62,32 @@ pub struct Body {
 }
 
 /// Requests `url` and reads as much of a successful HTML response as `mode`
-/// asks for. `timeout` overrides the client's for this request.
-pub async fn fetch(client: &Client, url: &Url, mode: BodyMode, timeout: Option<Duration>) -> (HttpInfo, Option<Body>) {
+/// asks for. `timeout` overrides the client's for this request. With `head`,
+/// a status-only request is a HEAD (the connection stays reusable, where a
+/// GET dropped after its headers costs a new one), falling back to GET for
+/// a server that does not take HEAD.
+pub async fn fetch(
+    client: &Client,
+    url: &Url,
+    mode: BodyMode,
+    timeout: Option<Duration>,
+    head: bool,
+) -> (HttpInfo, Option<Body>) {
     let started = Instant::now();
     let mut http = HttpInfo { url: url.to_string(), ..Default::default() };
-    let mut request = client.get(url.clone());
-    if let Some(timeout) = timeout {
-        request = request.timeout(timeout);
+    let send = |method: reqwest::Method| {
+        let mut request = client.request(method, url.clone());
+        if let Some(timeout) = timeout {
+            request = request.timeout(timeout);
+        }
+        request.send()
+    };
+    let head = head && matches!(mode, BodyMode::None);
+    let mut sent = send(if head { reqwest::Method::HEAD } else { reqwest::Method::GET }).await;
+    if head && sent.as_ref().is_ok_and(|response| matches!(response.status().as_u16(), 405 | 501)) {
+        sent = send(reqwest::Method::GET).await;
     }
-    let mut response = match request.send().await {
+    let mut response = match sent {
         Ok(response) => response,
         Err(error) => {
             http.ttfb_ms = started.elapsed().as_millis() as u32;

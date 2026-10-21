@@ -49,7 +49,9 @@ pub struct RenderConfig {
 impl Default for RenderConfig {
     fn default() -> Self {
         Self {
-            threads: 4,
+            // Rendering waits on the network as much as it computes: one
+            // thread per core, within reason for memory (~70 MB each).
+            threads: std::thread::available_parallelism().map_or(4, |cores| cores.get()).clamp(2, 16),
             settle: SettlePolicy::default(),
             navigation_timeout: Duration::from_secs(30),
             user_agent: None,

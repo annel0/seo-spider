@@ -40,7 +40,8 @@ pub struct CrawlConfig {
     pub check_resources: bool,
     /// Queue the URLs of the sitemaps listed in robots.txt (or /sitemap.xml).
     pub use_sitemaps: bool,
-    /// Skip URLs robots.txt disallows (they are still reported).
+    /// Skip URLs robots.txt disallows (they are still reported), and wait
+    /// its Crawl-delay between requests when that is slower than max_rps.
     pub respect_robots: bool,
     pub http: HttpConfig,
     /// How much of each internal response is read.
@@ -151,6 +152,10 @@ pub struct HttpConfig {
     pub head_max_bytes: usize,
     /// Extra request headers (cookies, authorization, Accept-Language...).
     pub headers: BTreeMap<String, String>,
+    /// Keep cookies the site sets for the rest of the crawl.
+    pub cookies: bool,
+    /// Check resources and external links with HEAD (GET when refused).
+    pub head_for_status: bool,
 }
 
 impl Default for HttpConfig {
@@ -166,6 +171,8 @@ impl Default for HttpConfig {
             max_body: 10 << 20,
             head_max_bytes: 256 << 10,
             headers: BTreeMap::new(),
+            cookies: true,
+            head_for_status: true,
         }
     }
 }
