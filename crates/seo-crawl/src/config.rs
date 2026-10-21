@@ -85,6 +85,30 @@ impl CrawlConfig {
         CrawlConfig { start_urls: vec![start_url], ..CrawlConfig::default() }
     }
 
+    /// The settings a crawl runs with. Following links needs them read: a
+    /// crawl of whole documents extracts links even when `extract` leaves
+    /// them out, and one that reads no `<body>` (nor renders) finds pages in
+    /// the sitemaps.
+    /// Returns what was changed, for the log.
+    pub fn resolve(&mut self) -> Vec<&'static str> {
+        let mut changed = Vec::new();
+        if self.follow_links {
+            match self.fetch {
+                FetchLevel::Full if !self.extract.links => {
+                    self.extract.links = true;
+                    changed.push("extract.links: following links needs them extracted");
+                }
+                // A rendered DOM has the links the raw document was not read for.
+                FetchLevel::Head | FetchLevel::Status if !self.use_sitemaps && self.render.is_none() => {
+                    self.use_sitemaps = true;
+                    changed.push("use_sitemaps: a crawl that reads no <body> finds pages in sitemaps");
+                }
+                _ => {}
+            }
+        }
+        changed
+    }
+
     /// A named starting point for the settings:
     ///
     /// - `minimal`: response headers and `<head>` only, URLs from the start
@@ -340,6 +364,20 @@ mod tests {
         assert_eq!(config.render.unwrap().threads, 2);
         assert!(toml::from_str::<CrawlConfig>("fetch = \"everything\"").is_err());
         assert!(toml::from_str::<CrawlConfig>("max_url = 5").is_err());
+    }
+
+    #[test]
+    fn following_links_turns_on_what_it_needs() {
+        let mut config = CrawlConfig { extract: ExtractOptions::head_only(), ..CrawlConfig::default() };
+        assert_eq!(config.resolve().len(), 1);
+        assert!(config.extract.links);
+        let mut config = CrawlConfig { fetch: FetchLevel::Head, ..CrawlConfig::default() };
+        config.resolve();
+        assert!(config.use_sitemaps);
+        let mut listed = CrawlConfig { fetch: FetchLevel::Head, follow_links: false, ..CrawlConfig::default() };
+        assert!(listed.resolve().is_empty() && !listed.use_sitemaps);
+        let mut rendered = CrawlConfig { fetch: FetchLevel::Head, render: Some(RenderSettings::default()), ..CrawlConfig::default() };
+        assert!(rendered.resolve().is_empty());
     }
 
     #[test]

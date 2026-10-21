@@ -49,10 +49,13 @@ pub struct CrawlSummary {
 }
 
 /// Crawls into `store` as `config` says, then hands the store back.
-pub async fn crawl(config: CrawlConfig, store: Store) -> Result<(Store, CrawlSummary)> {
+pub async fn crawl(mut config: CrawlConfig, store: Store) -> Result<(Store, CrawlSummary)> {
     let started = Instant::now();
     if config.start_urls.is_empty() {
         bail!("no start URL");
+    }
+    for change in config.resolve() {
+        tracing::info!("setting turned on: {change}");
     }
     let client = fetch::client(&fetch::ClientOptions {
         user_agent: &config.http.user_agent,
