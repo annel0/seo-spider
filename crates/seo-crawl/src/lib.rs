@@ -57,6 +57,7 @@ pub async fn crawl(config: CrawlConfig, store: Store) -> Result<(Store, CrawlSum
     let client = fetch::client(&fetch::ClientOptions {
         user_agent: &config.http.user_agent,
         timeout: config.http.timeout(),
+        connect_timeout: config.http.connect_timeout(),
         concurrency: config.http.concurrency,
         headers: &config.http.headers,
         cookies: config.http.cookies,
@@ -77,7 +78,8 @@ pub async fn crawl(config: CrawlConfig, store: Store) -> Result<(Store, CrawlSum
         client: client.clone(),
         render,
         http_slots: Semaphore::new(concurrency),
-        external_slots: Semaphore::new(concurrency),
+        external_slots: Semaphore::new(config.http.external_concurrency.max(1)),
+        external_hosts: ExternalHosts::new(config.http.external_per_host),
         external_timeout: config.http.timeout().min(config.http.external_timeout()),
         pacer: {
             // The slower of max_rps and robots.txt's Crawl-delay.
@@ -116,7 +118,9 @@ pub async fn crawl(config: CrawlConfig, store: Store) -> Result<(Store, CrawlSum
     // requests; external checks have slots of their own and are capped
     // apart, so a backlog of them never crowds out the site's pages.
     let internal_cap = concurrency + render_threads * 2;
-    let external_cap = concurrency;
+    // External tasks may wait on their host's slots; more of them than
+    // slots keeps the slots busy with other hosts meanwhile.
+    let external_cap = config.http.external_concurrency.max(1) * 4;
     let (mut internal_in_flight, mut external_in_flight) = (0usize, 0usize);
 
     let mut frontier = Frontier::new(config.max_urls, config.max_depth);
@@ -288,6 +292,7 @@ struct Ctx {
     render: Option<RenderPool>,
     http_slots: Semaphore,
     external_slots: Semaphore,
+    external_hosts: ExternalHosts,
     external_timeout: Duration,
     pacer: Option<Pacer>,
     head_for_status: bool,
@@ -341,6 +346,48 @@ fn retry_delay(http: &HttpInfo, internal: bool, attempt: u32) -> Option<Duration
         .and_then(|value| value.trim().parse::<u64>().ok())
         .map(|seconds| Duration::from_secs(seconds.min(30)));
     Some(after.unwrap_or(backoff))
+}
+
+/// Per external host: a cap on its requests in flight, and whether it could
+/// not be reached. Once a host fails to connect even on retry, the rest of
+/// its URLs are reported with that error instead of each waiting it out.
+struct ExternalHosts {
+    per_host: usize,
+    hosts: std::sync::Mutex<FxHashMap<String, ExternalHost>>,
+}
+
+struct ExternalHost {
+    slots: Arc<Semaphore>,
+    unreachable: Option<String>,
+}
+
+impl ExternalHosts {
+    fn new(per_host: usize) -> Self {
+        ExternalHosts { per_host: per_host.max(1), hosts: Default::default() }
+    }
+
+    fn with<T>(&self, host: &str, f: impl FnOnce(&mut ExternalHost) -> T) -> T {
+        let mut hosts = self.hosts.lock().expect("external hosts lock");
+        let entry = hosts.entry(host.to_string()).or_insert_with(|| ExternalHost {
+            slots: Arc::new(Semaphore::new(self.per_host)),
+            unreachable: None,
+        });
+        f(entry)
+    }
+
+    fn slots(&self, host: &str) -> Arc<Semaphore> {
+        self.with(host, |entry| entry.slots.clone())
+    }
+
+    fn unreachable(&self, host: &str) -> Option<String> {
+        self.with(host, |entry| entry.unreachable.clone())
+    }
+
+    fn mark_unreachable(&self, host: &str, error: &str) {
+        self.with(host, |entry| {
+            entry.unreachable.get_or_insert_with(|| error.to_string());
+        });
+    }
 }
 
 /// Spaces requests to the site an interval apart: max_rps or robots.txt Crawl-delay.
@@ -424,32 +471,36 @@ fn document(facts: PageFacts, level: i32) -> Document {
 }
 
 async fn process(ctx: Arc<Ctx>, item: Item) -> Outcome {
-    let (http, body) = {
-        let (slots, timeout) = if item.internal {
-            (&ctx.http_slots, None)
-        } else {
-            (&ctx.external_slots, Some(ctx.external_timeout))
+    let (http, body) = if item.internal {
+        let _slot = ctx.http_slots.acquire().await.expect("HTTP slots are never closed");
+        let fetched = fetch_retrying(&ctx, &item, ctx.body, None).await;
+        (fetched.http, fetched.body)
+    } else {
+        let host = item.url.origin().ascii_serialization();
+        let skipped = |error: String| HttpInfo {
+            url: item.url.to_string(),
+            error: Some(format!("not requested: {host} did not connect earlier ({error})")),
+            ..Default::default()
         };
-        let _slot = slots.acquire().await.expect("HTTP slots are never closed");
-        let mode = if item.internal { ctx.body } else { fetch::BodyMode::None };
-        let mut attempt = 0;
-        loop {
-            if item.internal {
-                if let Some(pacer) = &ctx.pacer {
-                    pacer.pace().await;
+        match ctx.external_hosts.unreachable(&host) {
+            Some(error) => (skipped(error), None),
+            None => {
+                let host_slots = ctx.external_hosts.slots(&host);
+                let _host_slot = host_slots.acquire().await.expect("host slots are never closed");
+                let _slot = ctx.external_slots.acquire().await.expect("HTTP slots are never closed");
+                // The host may have failed while this waited for a slot.
+                match ctx.external_hosts.unreachable(&host) {
+                    Some(error) => (skipped(error), None),
+                    None => {
+                        let fetched =
+                            fetch_retrying(&ctx, &item, fetch::BodyMode::None, Some(ctx.external_timeout)).await;
+                        if fetched.unreachable {
+                            let error = fetched.http.error.as_deref().unwrap_or("no connection");
+                            ctx.external_hosts.mark_unreachable(&host, error);
+                        }
+                        (fetched.http, fetched.body)
+                    }
                 }
-            }
-            let fetched = fetch::fetch(&ctx.client, &item.url, mode, timeout, ctx.head_for_status).await;
-            // External URLs are only retried after a network failure: a
-            // third party answering 5xx is the answer worth reporting.
-            let retries = if item.internal { ctx.retries } else { ctx.retries.min(1) };
-            match retry_delay(&fetched.0, item.internal, attempt) {
-                Some(delay) if attempt < retries => {
-                    tracing::debug!(url = %item.url, attempt, status = fetched.0.status, "retrying");
-                    attempt += 1;
-                    tokio::time::sleep(delay).await;
-                }
-                _ => break fetched,
             }
         }
     };
@@ -472,6 +523,30 @@ async fn process(ctx: Arc<Ctx>, item: Item) -> Outcome {
     let mut outcome = Outcome { item, http, bytes_read, raw, raw_body, rendered, candidates: Vec::new() };
     outcome.candidates = discover(&outcome, &ctx.rules);
     outcome
+}
+
+/// Requests the item, again while the failure is one worth retrying.
+async fn fetch_retrying(ctx: &Ctx, item: &Item, mode: fetch::BodyMode, timeout: Option<Duration>) -> fetch::Fetched {
+    // External URLs are only retried after a network failure: a third
+    // party answering 5xx is the answer worth reporting.
+    let retries = if item.internal { ctx.retries } else { ctx.retries.min(1) };
+    let mut attempt = 0;
+    loop {
+        if item.internal {
+            if let Some(pacer) = &ctx.pacer {
+                pacer.pace().await;
+            }
+        }
+        let fetched = fetch::fetch(&ctx.client, &item.url, mode, timeout, ctx.head_for_status).await;
+        match retry_delay(&fetched.http, item.internal, attempt) {
+            Some(delay) if attempt < retries => {
+                tracing::debug!(url = %item.url, attempt, status = fetched.http.status, "retrying");
+                attempt += 1;
+                tokio::time::sleep(delay).await;
+            }
+            _ => return fetched,
+        }
+    }
 }
 
 async fn render_page(pool: &RenderPool, url: &Url, ctx: &Ctx) -> RenderedPage {

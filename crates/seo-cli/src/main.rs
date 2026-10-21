@@ -120,9 +120,12 @@ struct CrawlArgs {
     #[arg(long)]
     sitemaps: bool,
 
-    /// HTTP requests in flight to the site (external checks get as many more).
+    /// HTTP requests in flight to the site.
     #[arg(long)]
     concurrency: Option<usize>,
+    /// External URLs checked at once, over all hosts.
+    #[arg(long)]
+    external_concurrency: Option<usize>,
     /// Upper bound on requests per second to the site.
     #[arg(long)]
     max_rps: Option<f64>,
@@ -352,6 +355,9 @@ fn crawl_config(args: &CrawlArgs) -> Result<CrawlConfig> {
     config.use_sitemaps |= args.sitemaps;
     if let Some(concurrency) = args.concurrency {
         config.http.concurrency = concurrency;
+    }
+    if let Some(concurrency) = args.external_concurrency {
+        config.http.external_concurrency = concurrency;
     }
     if args.max_rps.is_some() {
         config.http.max_rps = args.max_rps;

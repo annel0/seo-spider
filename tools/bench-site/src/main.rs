@@ -80,7 +80,7 @@ fn page(i: usize, pages: usize, port: u16) -> String {
         html,
         r#"<a href="/p/{previous}">Previous</a> <a href="/p/{next}">Next</a> <a href="/r/{next}">Moved</a>"#
     );
-    if i % 10 == 0 {
+    if i.is_multiple_of(10) {
         let _ = write!(html, r#" <a href="/missing/{i}">Broken</a>"#);
     }
     for k in 0..5 {

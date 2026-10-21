@@ -98,7 +98,7 @@ fn images(doc: &PageFacts, out: &mut Vec<Issue>) {
     let without_alt = doc
         .images
         .iter()
-        .filter(|image| image.alt.as_deref().map_or(true, str::is_empty))
+        .filter(|image| image.alt.as_deref().is_none_or(str::is_empty))
         .count();
     if without_alt > 0 {
         out.push(Issue::with_detail("image_alt_missing", format!("{without_alt} из {total}")));
@@ -120,7 +120,7 @@ fn images(doc: &PageFacts, out: &mut Vec<Issue>) {
         ));
     }
 
-    let blank = |value: &Option<String>| value.as_deref().map_or(true, |text| text.trim().is_empty());
+    let blank = |value: &Option<String>| value.as_deref().is_none_or(|text| text.trim().is_empty());
     let without_size = doc
         .images
         .iter()

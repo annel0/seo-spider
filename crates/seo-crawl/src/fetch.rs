@@ -10,6 +10,7 @@ use url::Url;
 pub struct ClientOptions<'a> {
     pub user_agent: &'a str,
     pub timeout: Duration,
+    pub connect_timeout: Duration,
     pub concurrency: usize,
     pub headers: &'a std::collections::BTreeMap<String, String>,
     /// Keep the cookies responses set, for the crawl's length.
@@ -35,7 +36,7 @@ pub fn client(options: &ClientOptions<'_>) -> anyhow::Result<Client> {
         .default_headers(headers)
         .cookie_store(options.cookies)
         .timeout(options.timeout)
-        .connect_timeout(Duration::from_secs(10))
+        .connect_timeout(options.connect_timeout)
         .pool_max_idle_per_host(options.concurrency)
         .tcp_nodelay(true)
         .gzip(true)
@@ -61,6 +62,14 @@ pub struct Body {
     pub html: String,
 }
 
+/// What a request came back with.
+pub struct Fetched {
+    pub http: HttpInfo,
+    pub body: Option<Body>,
+    /// No connection was made (DNS, TCP or TLS): the host failed, not the URL.
+    pub unreachable: bool,
+}
+
 /// Requests `url` and reads as much of a successful HTML response as `mode`
 /// asks for. `timeout` overrides the client's for this request. With `head`,
 /// a status-only request is a HEAD (the connection stays reusable, where a
@@ -72,7 +81,7 @@ pub async fn fetch(
     mode: BodyMode,
     timeout: Option<Duration>,
     head: bool,
-) -> (HttpInfo, Option<Body>) {
+) -> Fetched {
     let started = Instant::now();
     let mut http = HttpInfo { url: url.to_string(), ..Default::default() };
     let send = |method: reqwest::Method| {
@@ -94,7 +103,7 @@ pub async fn fetch(
         Err(error) => {
             http.ttfb_ms = started.elapsed().as_millis() as u32;
             http.error = Some(describe(&error));
-            return (http, None);
+            return Fetched { http, body: None, unreachable: host_failed(&error) };
         }
     };
     http.ttfb_ms = started.elapsed().as_millis() as u32;
@@ -119,7 +128,7 @@ pub async fn fetch(
     };
     if limit == 0 || !response.status().is_success() || !http.is_html() {
         http.size = response.content_length().unwrap_or(0);
-        return (http, None);
+        return Fetched { http, body: None, unreachable: false };
     }
     let mut body = Vec::with_capacity(response.content_length().map_or(64 << 10, |length| length as usize).min(limit));
     loop {
@@ -151,7 +160,7 @@ pub async fn fetch(
     // A head-only read stops early; the size is what was read.
     http.size = body.len() as u64;
     let html = decode(&body, http.content_type.as_deref());
-    (http, Some(Body { bytes: body, html }))
+    Fetched { http, body: Some(Body { bytes: body, html }), unreachable: false }
 }
 
 /// Where the `<head>` of a document ends: the position of `</head` or of
@@ -203,11 +212,25 @@ fn sniff_meta_charset(head: &[u8]) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
+/// Whether no connection could be made for reasons of the host's own: no
+/// DNS record, no answer, refused, a certificate that does not verify. A
+/// connection reset is left out: busy hosts and middleboxes reset some
+/// connections and take the next one.
+fn host_failed(error: &reqwest::Error) -> bool {
+    if !error.is_connect() {
+        return false;
+    }
+    // The I/O error sits deep in hyper's chain, wrapped in boxes that do not
+    // all downcast; its text is what is reliably there.
+    let text = describe(error).to_ascii_lowercase();
+    !["reset", "aborted", "broken pipe", "unexpected eof"].iter().any(|word| text.contains(word))
+}
+
 /// The error with its causes, the way a report shows it ("timeout", "dns
 /// error: ...").
 fn describe(error: &reqwest::Error) -> String {
     if error.is_timeout() {
-        return "timeout".into();
+        return if error.is_connect() { "connect timeout" } else { "timeout" }.into();
     }
     let mut text = error.to_string();
     let mut source = std::error::Error::source(error);

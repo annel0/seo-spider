@@ -45,7 +45,7 @@ pub(super) fn check(ctx: &Ctx, out: &mut Vec<Issue>) {
         }
     }
 
-    if doc.viewport.as_deref().map_or(true, |content| content.trim().is_empty()) {
+    if doc.viewport.as_deref().is_none_or(|content| content.trim().is_empty()) {
         out.push(Issue::new("viewport_missing"));
     }
 }

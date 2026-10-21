@@ -138,9 +138,12 @@ pub struct HttpConfig {
     pub user_agent: String,
     /// Product token robots.txt groups are matched against.
     pub robots_agent: String,
-    /// Requests in flight to the site. External checks get as many slots of
-    /// their own (spread over many hosts) and `external_timeout_ms`.
+    /// Requests in flight to the site.
     pub concurrency: usize,
+    /// External URLs checked at once, spread over many hosts, with
+    /// `external_timeout_ms`; no more than `external_per_host` on one host.
+    pub external_concurrency: usize,
+    pub external_per_host: usize,
     /// Upper bound on requests per second to the site; none by default.
     pub max_rps: Option<f64>,
     /// Extra attempts after no response, 429 or (for the site) 5xx, waiting
@@ -148,6 +151,9 @@ pub struct HttpConfig {
     pub retries: u32,
     pub timeout_ms: u64,
     pub external_timeout_ms: u64,
+    /// DNS, TCP and TLS together. Below the timeouts, so a host that does
+    /// not answer at all is told apart from a slow response.
+    pub connect_timeout_ms: u64,
     /// Whole bodies are cut at this size.
     pub max_body: usize,
     /// How far into a document `fetch = "head"` reads looking for `</head>`.
@@ -166,10 +172,13 @@ impl Default for HttpConfig {
             user_agent: concat!("Mozilla/5.0 (compatible; seo-spider/", env!("CARGO_PKG_VERSION"), ")").into(),
             robots_agent: "seo-spider".into(),
             concurrency: 16,
+            external_concurrency: 32,
+            external_per_host: 4,
             max_rps: None,
             retries: 1,
             timeout_ms: 20_000,
             external_timeout_ms: 10_000,
+            connect_timeout_ms: 5_000,
             max_body: 10 << 20,
             head_max_bytes: 256 << 10,
             headers: BTreeMap::new(),
@@ -186,6 +195,10 @@ impl HttpConfig {
 
     pub fn external_timeout(&self) -> Duration {
         Duration::from_millis(self.external_timeout_ms)
+    }
+
+    pub fn connect_timeout(&self) -> Duration {
+        Duration::from_millis(self.connect_timeout_ms)
     }
 }
 

@@ -25,6 +25,9 @@ struct OpenLink {
     image: bool,
 }
 
+/// An `<img>` as written: src, alt, width, height.
+type RawImage = (String, Option<String>, Option<String>, Option<String>);
+
 #[derive(Default)]
 struct State {
     base: Option<String>,
@@ -59,7 +62,7 @@ struct State {
     headings: Vec<(u8, String)>,
     link: Option<OpenLink>,
     links: Vec<OpenLink>,
-    images_raw: Vec<(String, Option<String>, Option<String>, Option<String>)>,
+    images_raw: Vec<RawImage>,
     pictures: Vec<bool>,
     pictures_without_img: usize,
     scripts_raw: Vec<String>,

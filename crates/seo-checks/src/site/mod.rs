@@ -171,7 +171,7 @@ impl SitePage {
 
     /// Declares no canonical, or declares itself.
     pub(crate) fn is_self_canonical(&self) -> bool {
-        self.canonical.as_deref().map_or(true, |canonical| urls::same_url(canonical, &self.url))
+        self.canonical.as_deref().is_none_or(|canonical| urls::same_url(canonical, &self.url))
     }
 
     /// Declares a different canonical.
