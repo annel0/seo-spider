@@ -169,6 +169,8 @@ pub async fn crawl(mut config: CrawlConfig, store: Store) -> Result<(Store, Craw
         elapsed: Duration::ZERO,
     };
     let mut tasks = JoinSet::new();
+    // Which URL each task fetches, for a task that panics.
+    let mut task_items: FxHashMap<tokio::task::Id, (usize, bool)> = FxHashMap::default();
     let mut last_progress = Instant::now();
     // Where the dispatcher's time goes: it is the one task every outcome
     // passes through.
@@ -213,18 +215,33 @@ pub async fn crawl(mut config: CrawlConfig, store: Store) -> Result<(Store, Craw
                 } else {
                     external_in_flight += 1;
                 }
-                tasks.spawn(process(ctx.clone(), item));
+                let task_item = (item.index, item.internal);
+                let task = tasks.spawn(process(ctx.clone(), item));
+                task_items.insert(task.id(), task_item);
             }
             let waited = Instant::now();
-            let Some(joined) = tasks.join_next().await else { break };
+            let Some(joined) = tasks.join_next_with_id().await else { break };
             waiting += waited.elapsed();
             let mut outcome = match joined {
-                Ok(outcome) => outcome,
+                Ok((id, outcome)) => {
+                    task_items.remove(&id);
+                    outcome
+                }
                 Err(error) => {
-                    // Which kind it was is lost with the task; free a slot of
-                    // each kind that has one taken so dispatch goes on.
-                    tracing::error!(%error, "crawl task failed");
-                    internal_in_flight = internal_in_flight.saturating_sub(1);
+                    // The URL gets a row saying so, and its slot is freed.
+                    let Some((index, internal)) = task_items.remove(&error.id()) else { continue };
+                    let url = frontier.known[index].url.clone();
+                    tracing::error!(%url, %error, "crawl task failed");
+                    if internal {
+                        internal_in_flight -= 1;
+                    } else {
+                        external_in_flight -= 1;
+                    }
+                    let http = HttpInfo { url, error: Some(format!("crawler error: {error}")), ..Default::default() };
+                    frontier.known[index].saved = true;
+                    summary.urls += 1;
+                    summary.errors += 1;
+                    writer.send(Write::Response { id: base_id + index as i64, http, internal }).await?;
                     continue;
                 }
             };

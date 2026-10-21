@@ -11,8 +11,8 @@ engine (branch `fix/chrome-parity`) instead of headless Chrome.
 | `seo-page` | Page model (`HttpInfo`, `PageFacts`) and HTML extraction, shared by raw and rendered documents |
 | `seo-render` | Pool of render threads, each with its own obscura `Page`; snapshots once the content settles |
 | `seo-crawl` | Frontier, HTTP fetch without following redirects, robots.txt, sitemaps, click depth, checks run |
-| `seo-checks` | 96 checks: the SEOnaut catalog (MIT) plus the JavaScript tab and a few more |
-| `seo-store` | SQLite storage: crawls, URLs, facts, links, renders, issues |
+| `seo-checks` | 100 checks: the SEOnaut catalog (MIT) plus the JavaScript tab and a few more |
+| `seo-store` | SQLite storage: crawls, URLs, facts (zstd JSON), renders, kept documents, issues |
 | `seo-cli` | The `seo-spider` binary |
 
 `spike/` is the throwaway benchmark that settled the architecture.
@@ -33,12 +33,39 @@ seo-spider crawl https://example.com/ --db example.sqlite --render-threads 8
 seo-spider export --db example.sqlite -o example.xlsx
 seo-spider export --db example.sqlite --format csv -o example-csv/
 seo-spider check --db example.sqlite
+seo-spider report --db example.sqlite
+seo-spider compare before.sqlite after.sqlite
+seo-spider bodies --db example.sqlite -o docs/
 ```
 
 Without `--render-threads` only the raw HTML is read. With it every HTML page
 is also rendered and links found only in the rendered DOM are crawled too.
-See `seo-spider crawl --help` for limits, robots.txt, nofollow, subdomains,
-sitemaps and timeouts.
+
+### Settings
+
+Settings come in layers: a preset, then a TOML file (`--config`), then flags.
+`--print-config` prints the result as TOML, a starting point for a file.
+
+| Preset | Reads |
+|---|---|
+| `minimal` | status, headers and `<head>` of the start URLs and sitemap URLs; nothing else requested |
+| `seo` (default) | whole raw HTML, links followed, resources and external links checked |
+| `js` | `seo` plus rendering |
+| `dump` | `js` keeping the raw and rendered documents (`seo-spider bodies` writes them out) |
+
+How much is downloaded: `--fetch status|head|full` (head stops at `</head>`),
+what is extracted: `--extract all|head|links,headings,text,...`, what is kept:
+`--store-html raw|rendered|both`, `--store-links` (link rows for SQL; exports
+and checks read links from the stored facts). A crawl that follows links
+turns on what that needs: link extraction, or sitemaps when no `<body>` is
+read. Checks whose input was not extracted report nothing.
+
+Speed and politeness: `--concurrency` (the site), `--external-concurrency`
+(other hosts, at most 4 per host; a host that does not connect is not asked
+again), `--max-rps`, robots.txt `Crawl-delay`, `--retries`. Rendering:
+`--render-threads`, settle timings, third-party stall limit, tracker
+blocking, the shared script/style cache and the fetch()/XHR cache; see
+`seo-spider crawl --help`.
 
 Export tabs: `summary`, `internal`, `external`, `redirects`, `javascript`
 (raw HTML against the rendered DOM), `links`, `issues`.
