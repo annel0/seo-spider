@@ -79,6 +79,7 @@ pub async fn crawl(config: CrawlConfig, store: Store) -> Result<(Store, CrawlSum
         external_slots: Semaphore::new(concurrency),
         external_timeout: config.http.timeout().min(config.http.external_timeout()),
         pacer: config.http.max_rps.filter(|rps| *rps > 0.0).map(Pacer::new),
+        retries: config.http.retries,
         body: match config.fetch {
             FetchLevel::Status => fetch::BodyMode::None,
             FetchLevel::Head => fetch::BodyMode::Head(config.http.head_max_bytes),
@@ -280,6 +281,8 @@ struct Ctx {
     external_timeout: Duration,
     pacer: Option<Pacer>,
     body: fetch::BodyMode,
+    /// Extra attempts for a request that failed in a way worth retrying.
+    retries: u32,
     /// What is read from the raw document: everything asked for when it is
     /// fetched whole, the `<head>` otherwise.
     raw_extract: ExtractOptions,
@@ -306,6 +309,27 @@ struct Candidate {
     internal: bool,
     resource: bool,
     edge: Edge,
+}
+
+/// How long to wait before trying a request again, if it is worth trying:
+/// no response at all, 429, or (for the site) a 5xx. `Retry-After` is
+/// honoured up to 30 s; otherwise the wait doubles from half a second.
+fn retry_delay(http: &HttpInfo, internal: bool, attempt: u32) -> Option<Duration> {
+    let retryable = match http.status {
+        0 => http.error.as_deref().is_some_and(|error| !error.starts_with("blocked")),
+        429 => true,
+        500..=599 => internal,
+        _ => false,
+    };
+    if !retryable {
+        return None;
+    }
+    let backoff = Duration::from_millis(500 << attempt.min(5));
+    let after = http
+        .header("retry-after")
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|seconds| Duration::from_secs(seconds.min(30)));
+    Some(after.unwrap_or(backoff))
 }
 
 /// Spaces requests to the site `1 / max_rps` apart.
@@ -399,13 +423,27 @@ async fn process(ctx: Arc<Ctx>, item: Item) -> Outcome {
             (&ctx.external_slots, Some(ctx.external_timeout))
         };
         let _slot = slots.acquire().await.expect("HTTP slots are never closed");
-        if item.internal {
-            if let Some(pacer) = &ctx.pacer {
-                pacer.pace().await;
+        let mode = if item.internal { ctx.body } else { fetch::BodyMode::None };
+        let mut attempt = 0;
+        loop {
+            if item.internal {
+                if let Some(pacer) = &ctx.pacer {
+                    pacer.pace().await;
+                }
+            }
+            let fetched = fetch::fetch(&ctx.client, &item.url, mode, timeout).await;
+            // External URLs are only retried after a network failure: a
+            // third party answering 5xx is the answer worth reporting.
+            let retries = if item.internal { ctx.retries } else { ctx.retries.min(1) };
+            match retry_delay(&fetched.0, item.internal, attempt) {
+                Some(delay) if attempt < retries => {
+                    tracing::debug!(url = %item.url, attempt, status = fetched.0.status, "retrying");
+                    attempt += 1;
+                    tokio::time::sleep(delay).await;
+                }
+                _ => break fetched,
             }
         }
-        let mode = if item.internal { ctx.body } else { fetch::BodyMode::None };
-        fetch::fetch(&ctx.client, &item.url, mode, timeout).await
     };
     // Everything below is CPU work, done here on a runtime worker so it runs
     // in parallel across pages instead of on the dispatcher.
@@ -843,6 +881,24 @@ mod tests {
         assert_eq!(frontier.next_internal().unwrap().url.path(), "/a");
         assert_eq!(frontier.next_internal().unwrap().url.path(), "/a.png");
         assert_eq!(frontier.next_external().unwrap().url.host_str(), Some("other.com"));
+    }
+
+    #[test]
+    fn retries_what_may_succeed_next_time() {
+        let http = |status: u16, error: Option<&str>, headers: Vec<(&str, &str)>| HttpInfo {
+            status,
+            error: error.map(str::to_string),
+            headers: headers.into_iter().map(|(name, value)| (name.to_string(), value.to_string())).collect(),
+            ..Default::default()
+        };
+        assert_eq!(retry_delay(&http(0, Some("timeout"), vec![]), true, 0), Some(Duration::from_millis(500)));
+        assert_eq!(retry_delay(&http(0, Some("timeout"), vec![]), true, 1), Some(Duration::from_millis(1000)));
+        assert_eq!(retry_delay(&http(503, None, vec![]), true, 0), Some(Duration::from_millis(500)));
+        assert_eq!(retry_delay(&http(503, None, vec![]), false, 0), None);
+        assert_eq!(retry_delay(&http(429, None, vec![("retry-after", "3")]), false, 0), Some(Duration::from_secs(3)));
+        assert_eq!(retry_delay(&http(429, None, vec![("retry-after", "600")]), true, 0), Some(Duration::from_secs(30)));
+        assert_eq!(retry_delay(&http(404, None, vec![]), true, 0), None);
+        assert_eq!(retry_delay(&http(200, None, vec![]), true, 0), None);
     }
 
     #[test]

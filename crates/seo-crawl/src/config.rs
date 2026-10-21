@@ -140,6 +140,9 @@ pub struct HttpConfig {
     pub concurrency: usize,
     /// Upper bound on requests per second to the site; none by default.
     pub max_rps: Option<f64>,
+    /// Extra attempts after no response, 429 or (for the site) 5xx, waiting
+    /// `Retry-After` or a doubling backoff. External URLs get at most one.
+    pub retries: u32,
     pub timeout_ms: u64,
     pub external_timeout_ms: u64,
     /// Whole bodies are cut at this size.
@@ -157,6 +160,7 @@ impl Default for HttpConfig {
             robots_agent: "seo-spider".into(),
             concurrency: 16,
             max_rps: None,
+            retries: 1,
             timeout_ms: 20_000,
             external_timeout_ms: 10_000,
             max_body: 10 << 20,

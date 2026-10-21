@@ -126,6 +126,9 @@ struct CrawlArgs {
     /// Upper bound on requests per second to the site.
     #[arg(long)]
     max_rps: Option<f64>,
+    /// Extra attempts after no response, 429 or 5xx.
+    #[arg(long)]
+    retries: Option<u32>,
     /// Request timeout, seconds.
     #[arg(long)]
     timeout: Option<u64>,
@@ -349,6 +352,9 @@ fn crawl_config(args: &CrawlArgs) -> Result<CrawlConfig> {
     }
     if args.max_rps.is_some() {
         config.http.max_rps = args.max_rps;
+    }
+    if let Some(retries) = args.retries {
+        config.http.retries = retries;
     }
     if let Some(timeout) = args.timeout {
         config.http.timeout_ms = timeout * 1000;
