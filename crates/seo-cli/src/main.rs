@@ -177,9 +177,9 @@ struct CrawlArgs {
     /// Keep documents: raw, rendered or both.
     #[arg(long, value_enum)]
     store_html: Option<StoreHtml>,
-    /// Do not store links as rows (keeps the database small).
+    /// Also write every link as a row of the links table, for SQL over links.
     #[arg(long)]
-    no_store_links: bool,
+    store_links: bool,
     /// Skip the checks after the crawl (`seo-spider check` runs them later).
     #[arg(long)]
     no_checks: bool,
@@ -419,7 +419,7 @@ fn crawl_config(args: &CrawlArgs) -> Result<CrawlConfig> {
         Some(StoreHtml::Both) => (config.store.raw_html, config.store.rendered_html) = (true, true),
         None => {}
     }
-    config.store.links &= !args.no_store_links;
+    config.store.links |= args.store_links;
     Ok(config)
 }
 

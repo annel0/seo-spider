@@ -127,7 +127,6 @@ impl CrawlConfig {
                 config.check_external = false;
                 config.check_resources = false;
                 config.extract = ExtractOptions::head_only();
-                config.store.links = false;
             }
             "seo" => {}
             "js" => config.render = Some(RenderSettings::default()),
@@ -234,8 +233,9 @@ pub struct StoreOptions {
     pub raw_html: bool,
     /// Keep each rendered DOM.
     pub rendered_html: bool,
-    /// Store every link as a row (inlinks, anchors); off keeps only the
-    /// count per page.
+    /// Also write every link as a row of the `links` table, for SQL over
+    /// links. Checks and exports read links from the stored facts and do
+    /// not need it; the rows cost a third of a fast crawl's time.
     pub links: bool,
     /// zstd level for kept documents; 0 stores them uncompressed.
     pub compression_level: i32,
@@ -243,7 +243,7 @@ pub struct StoreOptions {
 
 impl Default for StoreOptions {
     fn default() -> Self {
-        StoreOptions { raw_html: false, rendered_html: false, links: true, compression_level: 3 }
+        StoreOptions { raw_html: false, rendered_html: false, links: false, compression_level: 3 }
     }
 }
 

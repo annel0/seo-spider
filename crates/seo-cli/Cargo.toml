@@ -16,6 +16,7 @@ seo-store = { workspace = true }
 seo-checks = { workspace = true }
 rusqlite = { workspace = true }
 rayon = { workspace = true }
+rustc-hash = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
 url = { workspace = true }

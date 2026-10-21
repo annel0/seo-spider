@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use rayon::prelude::*;
 use rusqlite::params;
+use rustc_hash::FxHashMap;
 use seo_page::{HttpInfo, PageFacts};
 use seo_store::{Store, StoredUrl};
 
@@ -73,10 +74,6 @@ pub trait Sink {
     /// Ends the table; returns its rows written.
     fn end(&mut self) -> Result<usize>;
     fn finish(self: Box<Self>) -> Result<()>;
-    /// Rows a table can hold; further rows are dropped.
-    fn max_rows(&self) -> Option<usize> {
-        None
-    }
 }
 
 /// XLSX holds at most this many rows per sheet.
@@ -111,20 +108,36 @@ pub fn export(store: &Store, crawl_id: i64, sink: &mut dyn Sink) -> Result<Vec<(
     Ok(written)
 }
 
-/// Link counts into each URL from the document each page was judged by:
-/// the rendered one when the page was rendered, the raw one otherwise.
-fn inlinks(store: &Store, crawl_id: i64) -> Result<HashMap<String, (i64, i64)>> {
-    let mut select = store.connection().prepare(
-        // NOT INDEXED: a sequential scan of links beats reading them in
-        // to_url order through the index, row by row.
-        "SELECT l.to_url, count(*), count(DISTINCT l.from_url_id)
-         FROM links l NOT INDEXED
-         WHERE l.crawl_id = ?1 AND (l.source = 'rendered'
-             OR (l.source = 'raw' AND l.from_url_id NOT IN (SELECT url_id FROM facts WHERE source = 'rendered')))
-         GROUP BY l.to_url",
-    )?;
-    let rows = select.query_map(params![crawl_id], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?))))?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+/// Link counts into each URL, (links, linking pages), from the document
+/// each page was judged by: the rendered one when the page was rendered,
+/// the raw one otherwise. Read from the facts, which hold every link
+/// whether or not the crawl kept link rows.
+fn inlinks(store: &Store, crawl_id: i64) -> Result<FxHashMap<String, (i64, i64)>> {
+    let mut counts: FxHashMap<String, (i64, i64)> = FxHashMap::default();
+    store.for_each_url_chunk(crawl_id, CHUNK, |chunk| {
+        // Each page's targets with how often it links to each, so a page
+        // counts once among a target's linking pages.
+        let pages: Vec<FxHashMap<String, i64>> = chunk
+            .into_par_iter()
+            .map(|encoded| -> Result<_> {
+                let url = encoded.decode()?;
+                let mut targets: FxHashMap<String, i64> = FxHashMap::default();
+                for link in url.facts().map_or(&[][..], |facts| &facts.links) {
+                    if !link.href.is_empty() {
+                        *targets.entry(link.href.clone()).or_default() += 1;
+                    }
+                }
+                Ok(targets)
+            })
+            .collect::<Result<_>>()?;
+        for (target, links) in pages.into_iter().flatten() {
+            let entry = counts.entry(target).or_default();
+            entry.0 += links;
+            entry.1 += 1;
+        }
+        Ok(())
+    })?;
+    Ok(counts)
 }
 
 fn chars(text: Option<&str>) -> Cell {
@@ -169,19 +182,29 @@ fn url_rows(
     sink: &mut dyn Sink,
     row: impl Fn(&StoredUrl) -> Option<Vec<Cell>> + Sync,
 ) -> Result<()> {
+    url_row_groups(store, crawl_id, sink, |url| row(url).into_iter().collect())
+}
+
+/// `url_rows` for tabs with any number of rows per URL.
+fn url_row_groups(
+    store: &Store,
+    crawl_id: i64,
+    sink: &mut dyn Sink,
+    rows: impl Fn(&StoredUrl) -> Vec<Vec<Cell>> + Sync,
+) -> Result<()> {
     store.for_each_url_chunk(crawl_id, CHUNK, |chunk| {
-        let rows: Vec<Option<Vec<Cell>>> = chunk
+        let groups: Vec<Vec<Vec<Cell>>> = chunk
             .into_par_iter()
-            .map(|encoded| -> Result<_> { Ok(row(&encoded.decode()?)) })
+            .map(|encoded| -> Result<_> { Ok(rows(&encoded.decode()?)) })
             .collect::<Result<_>>()?;
-        for cells in rows.into_iter().flatten() {
+        for cells in groups.into_iter().flatten() {
             sink.row(&cells)?;
         }
         Ok(())
     })
 }
 
-fn internal(store: &Store, crawl_id: i64, inlinks: &HashMap<String, (i64, i64)>, sink: &mut dyn Sink) -> Result<usize> {
+fn internal(store: &Store, crawl_id: i64, inlinks: &FxHashMap<String, (i64, i64)>, sink: &mut dyn Sink) -> Result<usize> {
     sink.begin(
         "internal",
         &[
@@ -244,7 +267,7 @@ fn internal(store: &Store, crawl_id: i64, inlinks: &HashMap<String, (i64, i64)>,
     sink.end()
 }
 
-fn external(store: &Store, crawl_id: i64, inlinks: &HashMap<String, (i64, i64)>, sink: &mut dyn Sink) -> Result<usize> {
+fn external(store: &Store, crawl_id: i64, inlinks: &FxHashMap<String, (i64, i64)>, sink: &mut dyn Sink) -> Result<usize> {
     sink.begin(
         "external",
         &["Address", "Content Type", "Status Code", "Status", "Redirect URL", "Response Time (ms)", "Inlinks"],
@@ -426,36 +449,35 @@ fn javascript(store: &Store, crawl_id: i64, sink: &mut dyn Sink) -> Result<usize
     sink.end()
 }
 
+/// Every link of every page, from the document the page was judged by,
+/// with the status of its target when the crawl requested it.
 fn links(store: &Store, crawl_id: i64, sink: &mut dyn Sink) -> Result<usize> {
     sink.begin("links", &["From", "To", "To Status Code", "Anchor", "Rel", "Nofollow", "Position", "Image", "Document"])?;
-    let mut select = store.connection().prepare(
-        // NOT INDEXED: scanning links in rowid order needs no sort, where
-        // the crawl_id index made SQLite fetch and then sort every row.
-        "SELECT u.url, l.to_url, t.status, l.anchor, l.rel, l.nofollow, l.position, l.image, l.source
-         FROM links l NOT INDEXED
-         JOIN urls u ON u.id = l.from_url_id
-         LEFT JOIN urls t ON t.crawl_id = l.crawl_id AND t.url = l.to_url
-         WHERE l.crawl_id = ?1 AND (l.source = 'rendered'
-             OR (l.source = 'raw' AND l.from_url_id NOT IN (SELECT url_id FROM facts WHERE source = 'rendered')))
-         ORDER BY l.rowid
-         LIMIT ?2",
-    )?;
-    // A negative LIMIT is none.
-    let limit = sink.max_rows().map_or(-1, |rows| rows as i64);
-    let mut rows = select.query(params![crawl_id, limit])?;
-    while let Some(row) = rows.next()? {
-        sink.row(&[
-            Cell::Text(row.get(0)?),
-            Cell::Text(row.get(1)?),
-            row.get::<_, Option<i64>>(2)?.map_or(Cell::Empty, Cell::Int),
-            Cell::Text(row.get(3)?),
-            Cell::Text(row.get(4)?),
-            Cell::Bool(row.get(5)?),
-            Cell::Text(row.get(6)?),
-            Cell::Bool(row.get(7)?),
-            Cell::Text(row.get(8)?),
-        ])?;
-    }
+    let statuses: FxHashMap<String, i64> = store
+        .connection()
+        .prepare("SELECT url, status FROM urls WHERE crawl_id = ?1")?
+        .query_map(params![crawl_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    url_row_groups(store, crawl_id, sink, |url| {
+        let Some(facts) = url.facts() else { return Vec::new() };
+        facts
+            .links
+            .iter()
+            .map(|link| {
+                vec![
+                    Cell::from(url.http.url.as_str()),
+                    Cell::from(link.href.as_str()),
+                    statuses.get(&link.href).map_or(Cell::Empty, |status| Cell::Int(*status)),
+                    Cell::from(link.anchor.as_str()),
+                    Cell::Text(link.rel.join(" ")),
+                    Cell::Bool(link.nofollow),
+                    Cell::from(link.position.as_str()),
+                    Cell::Bool(link.image),
+                    Cell::from(facts.source.as_str()),
+                ]
+            })
+            .collect()
+    })?;
     sink.end()
 }
 
@@ -589,10 +611,6 @@ impl XlsxSink {
 }
 
 impl Sink for XlsxSink {
-    fn max_rows(&self) -> Option<usize> {
-        Some(MAX_ROWS)
-    }
-
     fn begin(&mut self, name: &'static str, headers: &[&'static str]) -> Result<()> {
         let bold = self.bold.clone();
         let sheet = self.workbook.add_worksheet_with_constant_memory();
