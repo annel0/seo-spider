@@ -26,6 +26,12 @@ pub struct RenderConfig {
     /// Let pages reach loopback and private addresses. obscura blocks them
     /// by default so a public page cannot probe the crawler's own network.
     pub allow_private_network: bool,
+    /// Stall limit for requests to other sites than the page's. A tracker
+    /// that never answers otherwise holds a page that defers its script for
+    /// obscura's 10 s stall limit. `None` keeps that limit.
+    pub third_party_timeout: Option<Duration>,
+    /// Skip the tracker and ad hosts of obscura's built-in list.
+    pub block_trackers: bool,
 }
 
 impl Default for RenderConfig {
@@ -37,6 +43,8 @@ impl Default for RenderConfig {
             user_agent: None,
             recycle_after: 200,
             allow_private_network: false,
+            third_party_timeout: Some(Duration::from_secs(3)),
+            block_trackers: true,
         }
     }
 }
@@ -93,6 +101,17 @@ impl RenderPool {
         ] {
             if std::env::var_os(key).is_none() {
                 std::env::set_var(key, "0");
+            }
+        }
+        // obscura reads its network switches from the environment; an
+        // explicit setting there wins over the pool's defaults.
+        let defaults = [
+            ("OBSCURA_THIRD_PARTY_TIMEOUT_MS", config.third_party_timeout.map(|limit| limit.as_millis().to_string())),
+            ("OBSCURA_BLOCK_TRACKERS", config.block_trackers.then(|| "1".to_string())),
+        ];
+        for (key, value) in defaults {
+            if let (None, Some(value)) = (std::env::var_os(key), value) {
+                std::env::set_var(key, value);
             }
         }
         if config.allow_private_network {
@@ -169,6 +188,7 @@ fn new_page(worker: usize, context: &Arc<BrowserContext>) -> Page {
 
 async fn render(page: &mut Page, url: &str, config: &RenderConfig) -> Rendered {
     let started = Instant::now();
+    tracing::debug!(url, "render start");
     let navigation = tokio::time::timeout(
         config.navigation_timeout,
         page.navigate_with_wait(url, WaitUntil::DomContentLoaded),
@@ -180,7 +200,9 @@ async fn render(page: &mut Page, url: &str, config: &RenderConfig) -> Rendered {
         Ok(Err(error)) => return Rendered::failed(url.to_string(), error.to_string(), started),
         Ok(Ok(())) => {}
     }
+    tracing::debug!(url, dcl_ms, "render domcontentloaded");
     let settle = page.settle_content(config.settle).await;
+    tracing::debug!(url, ms = started.elapsed().as_millis() as u64, settled = settle.settled, "render settled");
     let html = page
         .with_dom(|dom| match dom.query_selector("html") {
             Ok(Some(root)) => dom.outer_html(root),

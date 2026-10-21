@@ -14,6 +14,8 @@ reqwest = { workspace = true }
 texting_robots = { workspace = true }
 encoding_rs = { workspace = true }
 flate2 = { workspace = true }
+regex = { workspace = true }
+zstd = { workspace = true }
 scraper = { workspace = true }
 tokio = { workspace = true }
 url = { workspace = true }
@@ -21,3 +23,6 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+toml = { workspace = true }

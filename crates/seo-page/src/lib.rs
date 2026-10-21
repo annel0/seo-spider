@@ -5,9 +5,58 @@
 
 mod extract;
 
-pub use extract::extract;
+pub use extract::{extract, extract_with};
 
 use serde::{Deserialize, Serialize};
+
+/// What `extract_with` reads besides the `<head>` facts, which it always
+/// reads. Each part switched off saves its pass over the document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ExtractOptions {
+    /// `<a href>` and `<area href>` with anchor text, rel and position.
+    pub links: bool,
+    /// Images, scripts, stylesheets, iframes, audio and video.
+    pub resources: bool,
+    /// h1-h6.
+    pub headings: bool,
+    /// Visible text: word count and text hash.
+    pub text: bool,
+    /// JSON-LD blocks.
+    pub structured_data: bool,
+    pub forms: bool,
+    /// Element count and duplicate ids.
+    pub dom_stats: bool,
+}
+
+impl Default for ExtractOptions {
+    fn default() -> Self {
+        ExtractOptions {
+            links: true,
+            resources: true,
+            headings: true,
+            text: true,
+            structured_data: true,
+            forms: true,
+            dom_stats: true,
+        }
+    }
+}
+
+impl ExtractOptions {
+    /// Only the `<head>` facts.
+    pub fn head_only() -> Self {
+        ExtractOptions {
+            links: false,
+            resources: false,
+            headings: false,
+            text: false,
+            structured_data: false,
+            forms: false,
+            dom_stats: false,
+        }
+    }
+}
 
 /// Which document the facts were read from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,6 +131,10 @@ impl HttpInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PageFacts {
     pub source: Source,
+    /// What was read besides the `<head>`; a part switched off leaves its
+    /// fields empty, which checks must not read as "absent".
+    #[serde(default)]
+    pub extracted: ExtractOptions,
     /// `<html lang>`.
     pub lang: Option<String>,
     /// Every `<title>` in `<head>`, trimmed.

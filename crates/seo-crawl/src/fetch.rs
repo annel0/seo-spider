@@ -11,9 +11,17 @@ pub struct ClientOptions<'a> {
     pub user_agent: &'a str,
     pub timeout: Duration,
     pub concurrency: usize,
+    pub headers: &'a std::collections::BTreeMap<String, String>,
 }
 
 pub fn client(options: &ClientOptions<'_>) -> anyhow::Result<Client> {
+    let mut headers = reqwest::header::HeaderMap::new();
+    for (name, value) in options.headers {
+        headers.insert(
+            reqwest::header::HeaderName::from_bytes(name.as_bytes())?,
+            reqwest::header::HeaderValue::from_str(value)?,
+        );
+    }
     Ok(Client::builder()
         // Over HTTP/2 a status check drops its response unread, and further
         // streams on the same connection then stall until the timeout (seen
@@ -22,25 +30,37 @@ pub fn client(options: &ClientOptions<'_>) -> anyhow::Result<Client> {
         .http1_only()
         .redirect(reqwest::redirect::Policy::none())
         .user_agent(options.user_agent)
+        .default_headers(headers)
         .timeout(options.timeout)
         .connect_timeout(Duration::from_secs(10))
         .pool_max_idle_per_host(options.concurrency)
+        .tcp_nodelay(true)
         .gzip(true)
         .brotli(true)
         .deflate(true)
         .build()?)
 }
 
-/// Requests `url`; reads the body only when `want_body` and the response is
-/// a successful HTML document, up to `max_body` bytes. `timeout` overrides
-/// the client's for this request.
-pub async fn fetch(
-    client: &Client,
-    url: &Url,
-    want_body: bool,
-    max_body: usize,
-    timeout: Option<Duration>,
-) -> (HttpInfo, Option<String>) {
+/// How much of a successful HTML response to read.
+#[derive(Debug, Clone, Copy)]
+pub enum BodyMode {
+    /// Status and headers only.
+    None,
+    /// Up to the end of `<head>`, at most this many bytes.
+    Head(usize),
+    /// The whole body, at most this many bytes.
+    Full(usize),
+}
+
+/// A response body as received and as text.
+pub struct Body {
+    pub bytes: Vec<u8>,
+    pub html: String,
+}
+
+/// Requests `url` and reads as much of a successful HTML response as `mode`
+/// asks for. `timeout` overrides the client's for this request.
+pub async fn fetch(client: &Client, url: &Url, mode: BodyMode, timeout: Option<Duration>) -> (HttpInfo, Option<Body>) {
     let started = Instant::now();
     let mut http = HttpInfo { url: url.to_string(), ..Default::default() };
     let mut request = client.get(url.clone());
@@ -70,18 +90,32 @@ pub async fn fetch(
             target.set_fragment(None);
             target.to_string()
         });
-    if !(want_body && response.status().is_success() && http.is_html()) {
+    let (limit, head_only) = match mode {
+        BodyMode::Full(limit) => (limit, false),
+        BodyMode::Head(limit) => (limit, true),
+        BodyMode::None => (0, false),
+    };
+    if limit == 0 || !response.status().is_success() || !http.is_html() {
         http.size = response.content_length().unwrap_or(0);
         return (http, None);
     }
-    let mut body = Vec::new();
+    let mut body = Vec::with_capacity(response.content_length().map_or(64 << 10, |length| length as usize).min(limit));
     loop {
         match response.chunk().await {
             Ok(Some(chunk)) => {
+                let searched = body.len().saturating_sub(6);
                 body.extend_from_slice(&chunk);
-                if body.len() > max_body {
-                    body.truncate(max_body);
-                    http.error = Some(format!("body cut at {max_body} bytes"));
+                if head_only {
+                    if let Some(end) = head_end(&body, searched) {
+                        body.truncate(end);
+                        break;
+                    }
+                }
+                if body.len() > limit {
+                    body.truncate(limit);
+                    if !head_only {
+                        http.error = Some(format!("body cut at {limit} bytes"));
+                    }
                     break;
                 }
             }
@@ -92,9 +126,26 @@ pub async fn fetch(
             }
         }
     }
+    // A head-only read stops early; the size is what was read.
     http.size = body.len() as u64;
     let html = decode(&body, http.content_type.as_deref());
-    (http, Some(html))
+    (http, Some(Body { bytes: body, html }))
+}
+
+/// Where the `<head>` of a document ends: the position of `</head` or of
+/// `<body`, ASCII case-insensitively, searching from `from`.
+fn head_end(document: &[u8], from: usize) -> Option<usize> {
+    let mut at = from;
+    while let Some(offset) = document[at..].iter().position(|&byte| byte == b'<') {
+        let tag = at + offset;
+        let rest = &document[tag + 1..];
+        let starts = |name: &[u8]| rest.len() >= name.len() && rest[..name.len()].eq_ignore_ascii_case(name);
+        if starts(b"/head") || starts(b"body") {
+            return Some(tag);
+        }
+        at = tag + 1;
+    }
+    None
 }
 
 /// Decodes a document by the charset of its `Content-Type`, then of a
@@ -149,6 +200,14 @@ fn describe(error: &reqwest::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_the_end_of_head() {
+        let doc = b"<html><HEAD><title>t</title></Head><body>x";
+        assert_eq!(head_end(doc, 0), Some(28));
+        assert_eq!(head_end(b"<head><title>t</title><BODY>", 0), Some(22));
+        assert_eq!(head_end(b"<head><title>t</title>", 0), None);
+    }
 
     #[test]
     fn decodes_by_header_then_meta() {

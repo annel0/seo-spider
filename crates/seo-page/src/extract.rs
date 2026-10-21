@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 use scraper::{ElementRef, Html, Node, Selector};
 use url::Url;
 
-use crate::{Form, Hreflang, Image, Link, LinkPosition, PageFacts, Pagination, Source};
+use crate::{ExtractOptions, Form, Hreflang, Image, Link, LinkPosition, PageFacts, Pagination, Source};
 
 macro_rules! selector {
     ($name:ident, $css:expr) => {
@@ -32,9 +32,16 @@ selector!(VIDEO, "video[src], video source[src]");
 selector!(FORM, "form");
 selector!(WITH_ID, "[id]");
 selector!(ALL, "*");
+selector!(BODY, "body");
 
 /// Reads the facts of one HTML document fetched from (or rendered at) `url`.
 pub fn extract(html: &str, url: &Url, source: Source) -> PageFacts {
+    extract_with(html, url, source, &ExtractOptions::default())
+}
+
+/// `extract`, reading only what `options` asks for. The `<head>` facts
+/// (title, meta, canonical, hreflang, pagination, refresh) are always read.
+pub fn extract_with(html: &str, url: &Url, source: Source, options: &ExtractOptions) -> PageFacts {
     let document = Html::parse_document(html);
     // <base href> changes how every relative URL in the document resolves.
     let base = document
@@ -54,6 +61,7 @@ pub fn extract(html: &str, url: &Url, source: Source) -> PageFacts {
 
     let mut facts = PageFacts {
         source,
+        extracted: *options,
         lang: document
             .select(&HTML)
             .next()
@@ -83,7 +91,7 @@ pub fn extract(html: &str, url: &Url, source: Source) -> PageFacts {
         csp_meta: false,
         forms: Vec::new(),
         duplicate_ids: Vec::new(),
-        dom_elements: document.select(&ALL).count(),
+        dom_elements: if options.dom_stats { document.select(&ALL).count() } else { 0 },
         word_count: 0,
         text_hash: 0,
         json_ld: Vec::new(),
@@ -137,7 +145,7 @@ pub fn extract(html: &str, url: &Url, source: Source) -> PageFacts {
                 facts.canonicals_outside_head += 1;
             }
         }
-        if rels.iter().any(|rel| rel == "stylesheet") {
+        if options.resources && rels.iter().any(|rel| rel == "stylesheet") {
             if let Some(href) = resolve(href_raw) {
                 facts.stylesheets.push(href);
             }
@@ -167,12 +175,14 @@ pub fn extract(html: &str, url: &Url, source: Source) -> PageFacts {
         }
     }
 
-    for heading in document.select(&HEADINGS) {
-        let level = heading.value().name().as_bytes()[1] - b'0';
-        facts.headings.push((level, collapse(&heading.text().collect::<String>())));
+    if options.headings {
+        for heading in document.select(&HEADINGS) {
+            let level = heading.value().name().as_bytes()[1] - b'0';
+            facts.headings.push((level, collapse(&heading.text().collect::<String>())));
+        }
     }
 
-    for anchor in document.select(&ANCHORS) {
+    for anchor in document.select(&ANCHORS).filter(|_| options.links) {
         let element = anchor.value();
         let href_raw = element.attr("href").unwrap_or("").trim();
         let Some(href) = resolve(href_raw) else {
@@ -205,7 +215,7 @@ pub fn extract(html: &str, url: &Url, source: Source) -> PageFacts {
         });
     }
 
-    for img in document.select(&IMG) {
+    for img in document.select(&IMG).filter(|_| options.resources) {
         let element = img.value();
         let src = element
             .attr("src")
@@ -226,27 +236,35 @@ pub fn extract(html: &str, url: &Url, source: Source) -> PageFacts {
             height: element.attr("height").map(str::to_string),
         });
     }
-    facts.pictures_without_img = document
-        .select(&PICTURE)
-        .filter(|picture| picture.select(&IMG).next().is_none())
-        .count();
+    if options.resources {
+        facts.pictures_without_img = document
+            .select(&PICTURE)
+            .filter(|picture| picture.select(&IMG).next().is_none())
+            .count();
+    }
 
-    for script in document.select(&SCRIPT) {
-        let element = script.value();
-        if element
-            .attr("type")
-            .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("application/ld+json"))
-        {
-            facts.json_ld.push(script.text().collect::<String>().trim().to_string());
-        } else if let Some(src) = element.attr("src").and_then(&resolve) {
-            facts.scripts.push(src);
+    if options.resources || options.structured_data {
+        for script in document.select(&SCRIPT) {
+            let element = script.value();
+            if element
+                .attr("type")
+                .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("application/ld+json"))
+            {
+                if options.structured_data {
+                    facts.json_ld.push(script.text().collect::<String>().trim().to_string());
+                }
+            } else if let Some(src) = element.attr("src").filter(|_| options.resources).and_then(&resolve) {
+                facts.scripts.push(src);
+            }
         }
     }
-    facts.iframes = urls(&document, &IFRAME, "src", &resolve);
-    facts.audios = urls(&document, &AUDIO, "src", &resolve);
-    facts.videos = urls(&document, &VIDEO, "src", &resolve);
+    if options.resources {
+        facts.iframes = urls(&document, &IFRAME, "src", &resolve);
+        facts.audios = urls(&document, &AUDIO, "src", &resolve);
+        facts.videos = urls(&document, &VIDEO, "src", &resolve);
+    }
 
-    for form in document.select(&FORM) {
+    for form in document.select(&FORM).filter(|_| options.forms) {
         let element = form.value();
         let action = element
             .attr("action")
@@ -261,26 +279,30 @@ pub fn extract(html: &str, url: &Url, source: Source) -> PageFacts {
         });
     }
 
-    let mut ids: HashMap<&str, usize> = HashMap::new();
-    for element in document.select(&WITH_ID) {
-        if let Some(id) = element.value().attr("id").filter(|id| !id.is_empty()) {
-            *ids.entry(id).or_default() += 1;
+    if options.dom_stats {
+        let mut ids: HashMap<&str, usize> = HashMap::new();
+        for element in document.select(&WITH_ID) {
+            if let Some(id) = element.value().attr("id").filter(|id| !id.is_empty()) {
+                *ids.entry(id).or_default() += 1;
+            }
         }
+        let mut duplicates: Vec<String> =
+            ids.into_iter().filter(|(_, count)| *count > 1).map(|(id, _)| id.to_string()).collect();
+        duplicates.sort();
+        facts.duplicate_ids = duplicates;
     }
-    let mut duplicates: Vec<String> =
-        ids.into_iter().filter(|(_, count)| *count > 1).map(|(id, _)| id.to_string()).collect();
-    duplicates.sort();
-    facts.duplicate_ids = duplicates;
 
-    let text = visible_text(&document);
-    facts.word_count = text.split_whitespace().count();
-    facts.text_hash = xxhash_rust::xxh3::xxh3_64(text.as_bytes());
+    if options.text {
+        let text = visible_text(&document);
+        facts.word_count = text.split_whitespace().count();
+        facts.text_hash = xxhash_rust::xxh3::xxh3_64(text.as_bytes());
+    }
     facts
 }
 
 /// Visible text of `<body>`, whitespace-collapsed.
 fn visible_text(document: &Html) -> String {
-    let Some(body) = document.select(&Selector::parse("body").expect("valid selector")).next() else {
+    let Some(body) = document.select(&BODY).next() else {
         return String::new();
     };
     let mut words = String::new();
