@@ -4,8 +4,10 @@
 //! diff of the two.
 
 mod extract;
+mod stream;
 
-pub use extract::{extract, extract_with};
+pub use extract::{extract, extract_tree, extract_with};
+pub use stream::extract_stream;
 
 use serde::{Deserialize, Serialize};
 

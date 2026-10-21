@@ -7,6 +7,12 @@ license.workspace = true
 
 [dependencies]
 scraper = { workspace = true }
+lol_html = { workspace = true }
+htmlize = { workspace = true }
+rustc-hash = { workspace = true }
 url = { workspace = true }
 serde = { workspace = true }
 xxhash-rust = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

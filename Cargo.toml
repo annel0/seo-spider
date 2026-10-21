@@ -44,6 +44,8 @@ toml = "0.8"
 rayon = "1"
 rustc-hash = "2"
 scraper = "0.20"
+lol_html = "2"
+htmlize = { version = "1", features = ["unescape"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
