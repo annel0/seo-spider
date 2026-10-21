@@ -163,6 +163,9 @@ struct CrawlArgs {
     /// every target as visible (slower: needs layout).
     #[arg(long)]
     exact_intersection: bool,
+    /// Let layout download images and web fonts (slower; only pixels need them).
+    #[arg(long)]
+    render_media: bool,
     /// Let rendered pages reach loopback and private addresses. On by itself
     /// when a start URL is such an address.
     #[arg(long)]
@@ -386,6 +389,8 @@ fn crawl_config(args: &CrawlArgs) -> Result<CrawlConfig> {
         render.block_trackers &= !args.no_block_trackers;
         render.cache_static &= !args.no_render_cache;
         render.intersection_full_viewport &= !args.exact_intersection;
+        render.skip_images &= !args.render_media;
+        render.skip_fonts &= !args.render_media;
         match args.fetch_cache_ttl_ms {
             Some(0) => render.fetch_cache_ttl_ms = None,
             Some(ttl) => render.fetch_cache_ttl_ms = Some(ttl),

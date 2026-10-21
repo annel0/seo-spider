@@ -236,6 +236,9 @@ pub struct RenderSettings {
     /// IntersectionObserver sees every target in the viewport (lazy content
     /// loads, no layout to measure targets).
     pub intersection_full_viewport: bool,
+    /// Layout downloads no images or web fonts.
+    pub skip_images: bool,
+    pub skip_fonts: bool,
     /// Let pages reach loopback and private addresses.
     pub allow_private_network: bool,
     /// Replace a render thread's page after this many renders.
@@ -259,6 +262,8 @@ impl Default for RenderSettings {
             cache_mb: render.cache_mb,
             fetch_cache_ttl_ms: render.fetch_cache_ttl.map(|ttl| ttl.as_millis() as u64),
             intersection_full_viewport: render.intersection_full_viewport,
+            skip_images: render.skip_images,
+            skip_fonts: render.skip_fonts,
             allow_private_network: false,
             recycle_after: render.recycle_after,
         }
@@ -285,6 +290,8 @@ impl RenderSettings {
             cache_mb: self.cache_mb,
             fetch_cache_ttl: self.fetch_cache_ttl_ms.map(Duration::from_millis),
             intersection_full_viewport: self.intersection_full_viewport,
+            skip_images: self.skip_images,
+            skip_fonts: self.skip_fonts,
         }
     }
 }
