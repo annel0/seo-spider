@@ -41,6 +41,8 @@ url = { version = "2", features = ["serde"] }
 regex = "1"
 zstd = "0.13"
 toml = "0.8"
+rayon = "1"
+rustc-hash = "2"
 scraper = "0.20"
 rusqlite = { version = "0.32", features = ["bundled"] }
 clap = { version = "4", features = ["derive"] }

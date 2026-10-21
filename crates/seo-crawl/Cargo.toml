@@ -16,6 +16,8 @@ encoding_rs = { workspace = true }
 flate2 = { workspace = true }
 regex = { workspace = true }
 zstd = { workspace = true }
+rayon = { workspace = true }
+rustc-hash = { workspace = true }
 scraper = { workspace = true }
 tokio = { workspace = true }
 url = { workspace = true }

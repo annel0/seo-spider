@@ -18,6 +18,7 @@ pub struct Writer {
 
 impl Writer {
     pub fn spawn(mut store: Store, crawl_id: i64) -> Result<Self> {
+        store.bulk_writes()?;
         let (sender, mut receiver) = mpsc::channel::<Write>(MAX_BATCH);
         let thread = std::thread::Builder::new().name("store-writer".into()).spawn(move || {
             let mut batch = Vec::with_capacity(MAX_BATCH);

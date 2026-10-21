@@ -16,8 +16,10 @@ pub struct CrawlConfig {
     pub start_urls: Vec<Url>,
     /// Queue the links, canonicals, hreflang and pagination URLs pages point at.
     pub follow_links: bool,
-    /// Stop queueing new internal URLs once this many are known; external
-    /// URLs have a budget of the same size of their own.
+    /// Stop queueing new internal pages once this many are known. Internal
+    /// resources (images, scripts, styles, media) and external URLs each
+    /// have a budget of the same size, and resources are fetched after the
+    /// pages waiting, so they never take a page's place.
     pub max_urls: usize,
     /// URLs more than this many steps from a start URL are not queued.
     pub max_depth: Option<u32>,

@@ -12,12 +12,13 @@ mod fetch;
 mod robots;
 mod writer;
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use regex::RegexSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use seo_page::{HttpInfo, PageFacts, Source};
 use seo_render::{RenderPool, Rendered};
 use seo_store::{encode_facts, BodyKind, RenderRecord, Store, Write};
@@ -42,7 +43,7 @@ pub struct CrawlSummary {
     /// Responses with status 4xx/5xx or no response at all.
     pub errors: usize,
     pub blocked_by_robots: usize,
-    /// Bytes of response bodies read.
+    /// Bytes of response bodies actually read (a status check reads none).
     pub bytes: u64,
     pub elapsed: Duration,
 }
@@ -99,15 +100,19 @@ pub async fn crawl(config: CrawlConfig, store: Store) -> Result<(Store, CrawlSum
         },
     });
     let rules = &ctx.rules;
-    // Pages waiting for a render thread keep their HTTP slot free, so allow
-    // a few of them per thread on top of the requests.
-    let max_in_flight = concurrency * 2 + render_threads * 2;
+    // Tasks in flight per kind. Pages waiting for a render thread keep their
+    // HTTP slot free, so allow a few of them per thread on top of the
+    // requests; external checks have slots of their own and are capped
+    // apart, so a backlog of them never crowds out the site's pages.
+    let internal_cap = concurrency + render_threads * 2;
+    let external_cap = concurrency;
+    let (mut internal_in_flight, mut external_in_flight) = (0usize, 0usize);
 
     let mut frontier = Frontier::new(config.max_urls, config.max_depth);
     for start in &config.start_urls {
         if let Some(url) = rules.filters.normalize(start.clone()) {
             let internal = rules.scope.internal(&url);
-            frontier.push(url, 0, internal, None, Edge::Other);
+            frontier.push(url, 0, internal, false, None, Edge::Other);
         }
     }
     let roots: Vec<usize> = (0..frontier.known.len()).collect();
@@ -129,7 +134,7 @@ pub async fn crawl(config: CrawlConfig, store: Store) -> Result<(Store, CrawlSum
         for listed in &in_sitemap {
             let Some(url) = Url::parse(listed).ok().and_then(|url| rules.filters.normalize(url)) else { continue };
             if rules.scope.internal(&url) && rules.filters.allows(&url, true) {
-                frontier.push(url, 1, true, None, Edge::Other);
+                frontier.push(url, 1, true, false, None, Edge::Other);
             }
         }
     }
@@ -152,8 +157,20 @@ pub async fn crawl(config: CrawlConfig, store: Store) -> Result<(Store, CrawlSum
     let (mut waiting, mut storing, mut discovering) = (Duration::ZERO, Duration::ZERO, Duration::ZERO);
     let result: Result<()> = async {
         loop {
-            while tasks.len() < max_in_flight {
-                let Some(item) = frontier.next() else { break };
+            loop {
+                let item = if internal_in_flight < internal_cap {
+                    frontier.next_internal()
+                } else {
+                    None
+                };
+                let item = match item {
+                    Some(item) => item,
+                    None if external_in_flight < external_cap => match frontier.next_external() {
+                        Some(item) => item,
+                        None => break,
+                    },
+                    None => break,
+                };
                 if item.internal {
                     robots.load(&client, &item.url).await;
                     if !robots.allowed(&item.url) {
@@ -173,6 +190,11 @@ pub async fn crawl(config: CrawlConfig, store: Store) -> Result<(Store, CrawlSum
                         }
                     }
                 }
+                if item.internal {
+                    internal_in_flight += 1;
+                } else {
+                    external_in_flight += 1;
+                }
                 tasks.spawn(process(ctx.clone(), item));
             }
             let waited = Instant::now();
@@ -181,13 +203,28 @@ pub async fn crawl(config: CrawlConfig, store: Store) -> Result<(Store, CrawlSum
             let mut outcome = match joined {
                 Ok(outcome) => outcome,
                 Err(error) => {
+                    // Which kind it was is lost with the task; free a slot of
+                    // each kind that has one taken so dispatch goes on.
                     tracing::error!(%error, "crawl task failed");
+                    internal_in_flight = internal_in_flight.saturating_sub(1);
                     continue;
                 }
             };
+            if outcome.item.internal {
+                internal_in_flight -= 1;
+            } else {
+                external_in_flight -= 1;
+            }
             let discovered = Instant::now();
             for candidate in std::mem::take(&mut outcome.candidates) {
-                frontier.push(candidate.url, candidate.depth, candidate.internal, Some(outcome.item.index), candidate.edge);
+                frontier.push(
+                    candidate.url,
+                    candidate.depth,
+                    candidate.internal,
+                    candidate.resource,
+                    Some(outcome.item.index),
+                    candidate.edge,
+                );
             }
             discovering += discovered.elapsed();
             let stored = Instant::now();
@@ -198,7 +235,7 @@ pub async fn crawl(config: CrawlConfig, store: Store) -> Result<(Store, CrawlSum
                 tracing::info!(
                     done = summary.urls,
                     pages = summary.pages,
-                    queued = frontier.queue.len(),
+                    queued = frontier.queued(),
                     in_flight = tasks.len(),
                     "crawling"
                 );
@@ -267,6 +304,7 @@ struct Candidate {
     url: Url,
     depth: u32,
     internal: bool,
+    resource: bool,
     edge: Edge,
 }
 
@@ -302,6 +340,9 @@ struct Item {
     /// Internal URLs are read and their HTML followed; external ones are
     /// requested for the status only.
     internal: bool,
+    /// Found as an image, script, stylesheet or media file (or a redirect
+    /// from one): fetched after the pages waiting.
+    resource: bool,
 }
 
 /// A document read, with what the store needs prepared.
@@ -313,6 +354,8 @@ struct Document {
 struct Outcome {
     item: Item,
     http: HttpInfo,
+    /// Body bytes read from the network.
+    bytes_read: u64,
     raw: Option<Document>,
     raw_body: Option<Packed>,
     rendered: Option<RenderedPage>,
@@ -367,6 +410,7 @@ async fn process(ctx: Arc<Ctx>, item: Item) -> Outcome {
     // Everything below is CPU work, done here on a runtime worker so it runs
     // in parallel across pages instead of on the dispatcher.
     let mut raw_body = None;
+    let bytes_read = body.as_ref().map_or(0, |body| body.bytes.len() as u64);
     let raw = body.map(|body| {
         let facts = seo_page::extract_with(&body.html, &item.url, Source::Raw, &ctx.raw_extract);
         if ctx.store.raw_html {
@@ -379,7 +423,7 @@ async fn process(ctx: Arc<Ctx>, item: Item) -> Outcome {
         Some(pool) if renderable => Some(render_page(pool, &item.url, &ctx).await),
         _ => None,
     };
-    let mut outcome = Outcome { item, http, raw, raw_body, rendered, candidates: Vec::new() };
+    let mut outcome = Outcome { item, http, bytes_read, raw, raw_body, rendered, candidates: Vec::new() };
     outcome.candidates = discover(&outcome, &ctx.rules);
     outcome
 }
@@ -419,14 +463,14 @@ async fn record(
     frontier: &mut Frontier,
     summary: &mut CrawlSummary,
 ) -> Result<()> {
-    let Outcome { item, http, raw, raw_body, rendered, .. } = outcome;
+    let Outcome { item, http, bytes_read, raw, raw_body, rendered, .. } = outcome;
     let url_id = base_id + item.index as i64;
     frontier.known[item.index].saved = true;
     summary.urls += 1;
     if http.status == 0 || http.status >= 400 {
         summary.errors += 1;
     }
-    summary.bytes += http.size;
+    summary.bytes += bytes_read;
     writer.send(Write::Response { id: url_id, http, internal: item.internal }).await?;
     if let Some(Document { facts, data }) = raw {
         summary.pages += 1;
@@ -456,7 +500,8 @@ async fn record(
 /// (URL, edge) once.
 fn discover(outcome: &Outcome, rules: &Rules) -> Vec<Candidate> {
     let depth = outcome.item.depth;
-    let mut seen = HashSet::new();
+    let from_resource = outcome.item.resource;
+    let mut seen = FxHashSet::default();
     let mut candidates = Vec::new();
     let mut queue = |href: &str, depth: u32, edge: Edge| {
         if !seen.insert((href.to_string(), edge)) {
@@ -473,7 +518,8 @@ fn discover(outcome: &Outcome, rules: &Rules) -> Vec<Candidate> {
         if !rules.filters.allows(&url, internal) {
             return;
         }
-        candidates.push(Candidate { url, depth, internal, edge });
+        let resource = edge == Edge::Resource || (edge == Edge::Redirect && from_resource);
+        candidates.push(Candidate { url, depth, internal, resource, edge });
     };
     if outcome.http.is_redirect() {
         if let Some(location) = &outcome.http.location {
@@ -630,11 +676,14 @@ struct Known {
 /// URLs known to the crawl in discovery order and the ones still to fetch.
 /// A URL's position here is also its id offset in the store.
 struct Frontier {
-    queue: VecDeque<Item>,
-    index: HashMap<String, usize>,
+    pages: VecDeque<Item>,
+    resources: VecDeque<Item>,
+    external: VecDeque<Item>,
+    index: FxHashMap<String, usize>,
     known: Vec<Known>,
-    internal: usize,
-    external: usize,
+    /// URLs taken from each budget: internal pages, internal resources,
+    /// external URLs; each may reach `max_urls`.
+    counts: [usize; 3],
     max_urls: usize,
     max_depth: Option<u32>,
 }
@@ -642,29 +691,39 @@ struct Frontier {
 impl Frontier {
     fn new(max_urls: usize, max_depth: Option<u32>) -> Self {
         Frontier {
-            queue: VecDeque::new(),
-            index: HashMap::new(),
+            pages: VecDeque::new(),
+            resources: VecDeque::new(),
+            external: VecDeque::new(),
+            index: FxHashMap::default(),
             known: Vec::new(),
-            internal: 0,
-            external: 0,
+            counts: [0; 3],
             max_urls,
             max_depth,
         }
     }
 
-    fn push(&mut self, url: Url, depth: u32, internal: bool, from: Option<usize>, edge: Edge) {
+    fn push(&mut self, url: Url, depth: u32, internal: bool, resource: bool, from: Option<usize>, edge: Edge) {
         let index = match self.index.get(url.as_str()) {
             Some(&index) => index,
             None => {
-                let count = if internal { &mut self.internal } else { &mut self.external };
-                if *count >= self.max_urls || self.max_depth.is_some_and(|max| depth > max) {
+                let budget = match (internal, resource) {
+                    (true, false) => 0,
+                    (true, true) => 1,
+                    (false, _) => 2,
+                };
+                if self.counts[budget] >= self.max_urls || self.max_depth.is_some_and(|max| depth > max) {
                     return;
                 }
-                *count += 1;
+                self.counts[budget] += 1;
                 let index = self.known.len();
                 self.index.insert(url.to_string(), index);
                 self.known.push(Known { url: url.to_string(), saved: false, blocked: false, edges: Vec::new() });
-                self.queue.push_back(Item { url, index, depth, internal });
+                let item = Item { url, index, depth, internal, resource };
+                match budget {
+                    0 => self.pages.push_back(item),
+                    1 => self.resources.push_back(item),
+                    _ => self.external.push_back(item),
+                }
                 index
             }
         };
@@ -673,8 +732,17 @@ impl Frontier {
         }
     }
 
-    fn next(&mut self) -> Option<Item> {
-        self.queue.pop_front()
+    /// The next internal URL: pages first, resources once no page waits.
+    fn next_internal(&mut self) -> Option<Item> {
+        self.pages.pop_front().or_else(|| self.resources.pop_front())
+    }
+
+    fn next_external(&mut self) -> Option<Item> {
+        self.external.pop_front()
+    }
+
+    fn queued(&self) -> usize {
+        self.pages.len() + self.resources.len() + self.external.len()
     }
 
     /// Clicks from the nearest root to each known URL: links cost one,
@@ -745,14 +813,14 @@ mod tests {
     #[test]
     fn depths_follow_clicks_only() {
         let mut frontier = Frontier::new(100, None);
-        frontier.push(url("https://e.com/"), 0, true, None, Edge::Other);
-        frontier.push(url("https://e.com/a"), 1, true, Some(0), Edge::Click);
-        frontier.push(url("https://e.com/b"), 2, true, Some(1), Edge::Click);
-        frontier.push(url("https://e.com/b"), 1, true, Some(0), Edge::Click);
-        frontier.push(url("https://e.com/canonical"), 1, true, Some(0), Edge::Other);
-        frontier.push(url("https://e.com/orphan"), 1, true, None, Edge::Other);
-        frontier.push(url("https://e.com/moved"), 2, true, Some(1), Edge::Redirect);
-        frontier.push(url("https://e.com/img.png"), 2, true, Some(1), Edge::Resource);
+        frontier.push(url("https://e.com/"), 0, true, false, None, Edge::Other);
+        frontier.push(url("https://e.com/a"), 1, true, false, Some(0), Edge::Click);
+        frontier.push(url("https://e.com/b"), 2, true, false, Some(1), Edge::Click);
+        frontier.push(url("https://e.com/b"), 1, true, false, Some(0), Edge::Click);
+        frontier.push(url("https://e.com/canonical"), 1, true, false, Some(0), Edge::Other);
+        frontier.push(url("https://e.com/orphan"), 1, true, false, None, Edge::Other);
+        frontier.push(url("https://e.com/moved"), 2, true, false, Some(1), Edge::Redirect);
+        frontier.push(url("https://e.com/img.png"), 2, true, true, Some(1), Edge::Resource);
         assert_eq!(frontier.known.len(), 7);
         assert_eq!(
             frontier.depths(&[0]),
@@ -763,12 +831,18 @@ mod tests {
     #[test]
     fn limits_stop_queueing() {
         let mut frontier = Frontier::new(2, Some(1));
-        frontier.push(url("https://e.com/"), 0, true, None, Edge::Other);
-        frontier.push(url("https://e.com/deep"), 2, true, Some(0), Edge::Click);
-        frontier.push(url("https://e.com/a"), 1, true, Some(0), Edge::Click);
-        frontier.push(url("https://e.com/b"), 1, true, Some(0), Edge::Click);
-        frontier.push(url("https://other.com/"), 1, false, Some(0), Edge::Click);
-        assert_eq!(frontier.known.len(), 3);
+        frontier.push(url("https://e.com/"), 0, true, false, None, Edge::Other);
+        frontier.push(url("https://e.com/deep"), 2, true, false, Some(0), Edge::Click);
+        frontier.push(url("https://e.com/a"), 1, true, false, Some(0), Edge::Click);
+        frontier.push(url("https://e.com/b"), 1, true, false, Some(0), Edge::Click);
+        frontier.push(url("https://other.com/"), 1, false, false, Some(0), Edge::Click);
+        // Resources have a budget of their own and wait behind pages.
+        frontier.push(url("https://e.com/a.png"), 1, true, true, Some(0), Edge::Resource);
+        assert_eq!(frontier.known.len(), 4);
+        assert_eq!(frontier.next_internal().unwrap().url.path(), "/");
+        assert_eq!(frontier.next_internal().unwrap().url.path(), "/a");
+        assert_eq!(frontier.next_internal().unwrap().url.path(), "/a.png");
+        assert_eq!(frontier.next_external().unwrap().url.host_str(), Some("other.com"));
     }
 
     #[test]

@@ -86,7 +86,8 @@ struct CrawlArgs {
     /// Follow links even in list mode.
     #[arg(long)]
     follow: bool,
-    /// Stop queueing new internal URLs once this many are known.
+    /// Stop queueing new internal pages once this many are known (resources
+    /// and external links each get a budget of the same size).
     #[arg(long)]
     max_urls: Option<usize>,
     /// Do not queue URLs more than this many steps from a start URL.

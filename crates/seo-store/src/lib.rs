@@ -6,7 +6,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
-use seo_page::{HttpInfo, PageFacts, Source};
+use seo_page::{HttpInfo, PageFacts};
 
 const SCHEMA: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -158,6 +158,22 @@ impl StoredUrl {
     }
 }
 
+/// A URL whose facts are still as stored; `decode` reads them.
+pub struct EncodedUrl {
+    pub url: StoredUrl,
+    pub raw: Option<Vec<u8>>,
+    pub rendered: Option<Vec<u8>>,
+}
+
+impl EncodedUrl {
+    pub fn decode(self) -> Result<StoredUrl> {
+        let EncodedUrl { mut url, raw, rendered } = self;
+        url.raw = raw.as_deref().map(decode_facts).transpose()?;
+        url.rendered = rendered.as_deref().map(decode_facts).transpose()?;
+        Ok(url)
+    }
+}
+
 /// A render outcome as stored.
 #[derive(Debug, Clone)]
 pub struct RenderRecord {
@@ -241,6 +257,14 @@ impl Store {
             .query_row("SELECT max(id) FROM crawls", [], |row| row.get(0))
             .optional()?
             .flatten())
+    }
+
+    /// Turns off foreign key checks for this connection: the crawl's writer
+    /// only inserts rows whose references it made itself, and the lookups
+    /// cost a third of a link row's insert.
+    pub fn bulk_writes(&self) -> Result<()> {
+        self.conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
+        Ok(())
     }
 
     /// The first URL id no row uses yet; a crawl numbers its URLs from it.
@@ -390,55 +414,68 @@ impl Store {
 
     /// Every URL of a crawl with its facts, in insertion order.
     pub fn urls(&self, crawl_id: i64) -> Result<Vec<StoredUrl>> {
+        let mut urls = Vec::new();
+        self.for_each_url_chunk(crawl_id, 4096, |chunk| {
+            for encoded in chunk {
+                urls.push(encoded.decode()?);
+            }
+            Ok(())
+        })?;
+        Ok(urls)
+    }
+
+    /// Every URL of a crawl in id order, `chunk` at a time, with its facts
+    /// still encoded: a reader decodes them where it likes (in parallel) and
+    /// never holds more than a chunk of them.
+    pub fn for_each_url_chunk(
+        &self,
+        crawl_id: i64,
+        chunk: usize,
+        mut each: impl FnMut(Vec<EncodedUrl>) -> Result<()>,
+    ) -> Result<()> {
         let mut select = self.conn.prepare(
-            "SELECT id, url, status, location, content_type, ttfb_ms, size, error, headers,
-                    depth, in_sitemap, blocked_by_robots, internal
-             FROM urls WHERE crawl_id = ?1 ORDER BY id",
+            "SELECT u.id, u.url, u.status, u.location, u.content_type, u.ttfb_ms, u.size, u.error, u.headers,
+                    u.depth, u.in_sitemap, u.blocked_by_robots, u.internal, raw.data, rendered.data
+             FROM urls u
+             LEFT JOIN facts raw ON raw.url_id = u.id AND raw.source = 'raw'
+             LEFT JOIN facts rendered ON rendered.url_id = u.id AND rendered.source = 'rendered'
+             WHERE u.crawl_id = ?1 ORDER BY u.id",
         )?;
         let mut rows = select.query(params![crawl_id])?;
-        let mut urls = Vec::new();
+        let mut batch = Vec::with_capacity(chunk);
         while let Some(row) = rows.next()? {
             let headers: String = row.get(8)?;
-            urls.push(StoredUrl {
-                id: row.get(0)?,
-                http: HttpInfo {
-                    url: row.get(1)?,
-                    status: row.get(2)?,
-                    location: row.get(3)?,
-                    content_type: row.get(4)?,
-                    ttfb_ms: row.get(5)?,
-                    size: row.get::<_, i64>(6)? as u64,
-                    error: row.get(7)?,
-                    headers: serde_json::from_str(&headers).unwrap_or_default(),
+            batch.push(EncodedUrl {
+                url: StoredUrl {
+                    id: row.get(0)?,
+                    http: HttpInfo {
+                        url: row.get(1)?,
+                        status: row.get(2)?,
+                        location: row.get(3)?,
+                        content_type: row.get(4)?,
+                        ttfb_ms: row.get(5)?,
+                        size: row.get::<_, i64>(6)? as u64,
+                        error: row.get(7)?,
+                        headers: serde_json::from_str(&headers).unwrap_or_default(),
+                    },
+                    internal: row.get(12)?,
+                    depth: row.get(9)?,
+                    in_sitemap: row.get(10)?,
+                    blocked_by_robots: row.get(11)?,
+                    raw: None,
+                    rendered: None,
                 },
-                internal: row.get(12)?,
-                depth: row.get(9)?,
-                in_sitemap: row.get(10)?,
-                blocked_by_robots: row.get(11)?,
-                raw: None,
-                rendered: None,
+                raw: row.get(13)?,
+                rendered: row.get(14)?,
             });
-        }
-        let index: std::collections::HashMap<i64, usize> =
-            urls.iter().enumerate().map(|(i, url)| (url.id, i)).collect();
-        let mut select = self.conn.prepare(
-            "SELECT f.url_id, f.source, f.data FROM facts f JOIN urls u ON u.id = f.url_id
-             WHERE u.crawl_id = ?1",
-        )?;
-        let mut rows = select.query(params![crawl_id])?;
-        while let Some(row) = rows.next()? {
-            let url_id: i64 = row.get(0)?;
-            let source: String = row.get(1)?;
-            let data: Vec<u8> = row.get(2)?;
-            let Some(&i) = index.get(&url_id) else { continue };
-            let facts = decode_facts(&data)?;
-            match facts.source {
-                Source::Raw if source == "raw" => urls[i].raw = Some(facts),
-                Source::Rendered if source == "rendered" => urls[i].rendered = Some(facts),
-                _ => {}
+            if batch.len() >= chunk {
+                each(std::mem::replace(&mut batch, Vec::with_capacity(chunk)))?;
             }
         }
-        Ok(urls)
+        if !batch.is_empty() {
+            each(batch)?;
+        }
+        Ok(())
     }
 
     /// Raw access for exports and ad-hoc queries.
@@ -450,6 +487,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use seo_page::Source;
 
     #[test]
     fn round_trips_a_page() {
