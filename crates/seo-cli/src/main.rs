@@ -229,7 +229,7 @@ fn main() -> Result<()> {
                 // Page console errors are stored per render; logging them too
                 // buries the progress lines.
                 .unwrap_or_else(|_| {
-                    tracing_subscriber::EnvFilter::new("seo_crawl=info,seo_cli=info,obscura::console=off,warn")
+                    tracing_subscriber::EnvFilter::new("seo_crawl=info,seo_cli=info,obscura::console=off,usvg=error,warn")
                 }),
         )
         .with_writer(std::io::stderr)
