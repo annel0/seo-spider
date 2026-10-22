@@ -154,6 +154,9 @@ struct CrawlArgs {
     /// `</head>` to keep the connection (0: cut there, least traffic).
     #[arg(long, value_name = "KB")]
     head_drain_kb: Option<usize>,
+    /// Keep the request rate when the site answers 429 or 503.
+    #[arg(long)]
+    no_auto_throttle: bool,
     /// Upper bound on requests per second to the site.
     #[arg(long)]
     max_rps: Option<f64>,
@@ -416,6 +419,7 @@ fn crawl_config(args: &CrawlArgs) -> Result<CrawlConfig> {
         config.http.external_concurrency = concurrency;
     }
     config.http.http2 |= args.http2;
+    config.http.auto_throttle &= !args.no_auto_throttle;
     if let Some(kb) = args.head_drain_kb {
         config.http.head_drain_bytes = kb << 10;
     }

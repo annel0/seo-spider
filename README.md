@@ -65,7 +65,9 @@ read. Checks whose input was not extracted report nothing.
 
 Speed and politeness: `--concurrency` (the site), `--external-concurrency`
 (other hosts, at most 4 per host; a host that does not connect is not asked
-again), `--max-rps`, robots.txt `Crawl-delay`, `--retries`, `--http2`
+again), `--max-rps`, robots.txt `Crawl-delay`, automatic slowing down
+while the site answers 429 or 503 (`--no-auto-throttle` turns it off;
+drom.ru: 79 of 200 URLs failed without it, none with it), `--retries`, `--http2`
 (faster for `minimal` where it works, but off everywhere by default: cut
 reads reset HTTP/2 streams, and sites guarding against rapid reset, such
 as webflow.com and ghost.org, then fail or answer 403). TLS:

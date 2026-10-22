@@ -149,7 +149,9 @@ pub async fn crawl_with(
             if let Some(delay) = from_robots {
                 tracing::info!(delay_s = delay.as_secs_f64(), "robots.txt Crawl-delay");
             }
-            from_rps.into_iter().chain(from_robots).max().map(Pacer::new)
+            let floor = from_rps.into_iter().chain(from_robots).max();
+            (floor.is_some() || config.http.auto_throttle)
+                .then(|| Pacer::new(floor.unwrap_or_default(), config.http.auto_throttle))
         },
         head_for_status: config.http.head_for_status,
         stop: stop.clone(),
@@ -527,27 +529,71 @@ impl ExternalHosts {
     }
 }
 
-/// Spaces requests to the site an interval apart: max_rps or robots.txt Crawl-delay.
+/// Spaces requests to the site an interval apart: max_rps or robots.txt
+/// Crawl-delay at least, and further apart while the site answers 429 or
+/// 503: each such answer doubles the interval (from 100 ms, up to 10 s),
+/// each response that goes through takes a 32nd off it.
 struct Pacer {
+    floor: Duration,
+    adaptive: bool,
+    state: std::sync::Mutex<PacerState>,
+}
+
+struct PacerState {
+    next: tokio::time::Instant,
     interval: Duration,
-    next: std::sync::Mutex<tokio::time::Instant>,
+    /// Answers to requests sent before the last slow-down say nothing new.
+    slowed_at: Option<tokio::time::Instant>,
 }
 
 impl Pacer {
-    fn new(interval: Duration) -> Self {
-        Pacer { interval, next: std::sync::Mutex::new(tokio::time::Instant::now()) }
+    fn new(floor: Duration, adaptive: bool) -> Self {
+        let state = PacerState { next: tokio::time::Instant::now(), interval: floor, slowed_at: None };
+        Pacer { floor, adaptive, state: std::sync::Mutex::new(state) }
     }
 
     /// Waits for this request's turn; false if the crawl stops first, which
     /// behind a Crawl-delay of 10 s can be minutes away.
     async fn pace(&self, stop: &AtomicBool) -> bool {
         let at = {
-            let mut next = self.next.lock().expect("pacer lock");
-            let at = (*next).max(tokio::time::Instant::now());
-            *next = at + self.interval;
+            let mut state = self.state.lock().expect("pacer lock");
+            let at = state.next.max(tokio::time::Instant::now());
+            state.next = at + state.interval;
             at
         };
         sleep_unless_stopped(stop, at).await
+    }
+
+    /// The site answered 429 or 503.
+    fn slow_down(&self) {
+        if !self.adaptive {
+            return;
+        }
+        let now = tokio::time::Instant::now();
+        let mut state = self.state.lock().expect("pacer lock");
+        if state.slowed_at.is_some_and(|at| now < at + state.interval.max(Duration::from_secs(1))) {
+            return;
+        }
+        state.slowed_at = Some(now);
+        state.interval = (state.interval * 2).clamp(Duration::from_millis(100), Duration::from_secs(10)).max(self.floor);
+        tracing::info!(interval_ms = state.interval.as_millis() as u64, "the site asks to slow down");
+    }
+
+    /// A response that went through eases the interval back to the floor.
+    fn speed_up(&self) {
+        if !self.adaptive {
+            return;
+        }
+        let mut state = self.state.lock().expect("pacer lock");
+        if state.interval > self.floor {
+            let eased = state.interval - state.interval / 32;
+            state.interval = if eased < Duration::from_millis(1) { self.floor } else { eased.max(self.floor) };
+        }
+    }
+
+    #[cfg(test)]
+    fn interval(&self) -> Duration {
+        self.state.lock().unwrap().interval
     }
 }
 
@@ -786,6 +832,13 @@ async fn fetch_retrying(
         }
         let client = if item.internal { &ctx.client } else { &ctx.external_client };
         let fetched = fetch::fetch(client, &item.url, mode, timeout, ctx.head_for_status).await;
+        if let (true, Some(pacer)) = (item.internal, &ctx.pacer) {
+            match fetched.http.status {
+                429 | 503 => pacer.slow_down(),
+                200..=399 => pacer.speed_up(),
+                _ => {}
+            }
+        }
         match retry_delay(&fetched.http, item.internal, attempt) {
             Some(delay) if attempt < retries => {
                 tracing::debug!(url = %item.url, attempt, status = fetched.http.status, "retrying");
@@ -1215,6 +1268,30 @@ mod tests {
             ]
         );
         assert_eq!(sent, [("X-Test".to_string(), "yes".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn pacer_backs_off_on_overload_and_eases_back() {
+        let pacer = Pacer::new(Duration::ZERO, true);
+        pacer.slow_down();
+        assert_eq!(pacer.interval(), Duration::from_millis(100));
+        // The other answers to requests already sent do not compound it.
+        pacer.slow_down();
+        assert_eq!(pacer.interval(), Duration::from_millis(100));
+        for _ in 0..300 {
+            pacer.speed_up();
+        }
+        assert_eq!(pacer.interval(), Duration::ZERO);
+        let floored = Pacer::new(Duration::from_millis(500), true);
+        floored.slow_down();
+        assert_eq!(floored.interval(), Duration::from_secs(1));
+        for _ in 0..300 {
+            floored.speed_up();
+        }
+        assert_eq!(floored.interval(), Duration::from_millis(500));
+        let fixed = Pacer::new(Duration::from_millis(500), false);
+        fixed.slow_down();
+        assert_eq!(fixed.interval(), Duration::from_millis(500));
     }
 
     #[test]

@@ -191,6 +191,9 @@ pub struct HttpConfig {
     pub external_per_host: usize,
     /// Upper bound on requests per second to the site; none by default.
     pub max_rps: Option<f64>,
+    /// Space requests to the site further apart while it answers 429 or 503,
+    /// easing back as responses go through.
+    pub auto_throttle: bool,
     /// Extra attempts after no response, 429 or (for the site) 5xx, waiting
     /// `Retry-After` or a doubling backoff. External URLs get at most one.
     pub retries: u32,
@@ -239,6 +242,7 @@ impl Default for HttpConfig {
             external_concurrency: 32,
             external_per_host: 4,
             max_rps: None,
+            auto_throttle: true,
             retries: 1,
             timeout_ms: 20_000,
             external_timeout_ms: 10_000,
