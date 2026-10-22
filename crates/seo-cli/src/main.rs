@@ -74,7 +74,7 @@ struct CrawlArgs {
     urls: Vec<Url>,
     #[arg(long, default_value = "crawl.sqlite")]
     db: PathBuf,
-    /// Starting settings: minimal, seo, js or dump.
+    /// Starting settings, least downloaded first: headers, minimal, seo, js or dump.
     #[arg(long, default_value = "seo")]
     preset: String,
     /// TOML file merged over the preset.
@@ -307,7 +307,7 @@ fn main() -> Result<()> {
 /// The preset, with the TOML file merged over it table by table.
 fn base_config(args: &CrawlArgs) -> Result<CrawlConfig> {
     let preset = CrawlConfig::preset(&args.preset)
-        .with_context(|| format!("unknown preset {:?} (minimal, seo, js, dump)", args.preset))?;
+        .with_context(|| format!("unknown preset {:?} (headers, minimal, seo, js, dump)", args.preset))?;
     let Some(path) = &args.config else { return Ok(preset) };
     let text = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     let file: toml::Value = toml::from_str(&text).with_context(|| format!("parse {}", path.display()))?;

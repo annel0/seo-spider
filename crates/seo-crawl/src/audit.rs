@@ -112,7 +112,13 @@ pub fn run_checks(store: &mut Store, crawl_id: i64) -> Result<usize> {
     let pages_done = started.elapsed();
     issues.extend(check_site(&site).into_iter().map(|(at, issue)| (ids[at], issue.code, issue.detail)));
     let site_done = started.elapsed();
-    issues.retain(|(id, code, _)| extracted.get(id).is_none_or(|read| meaningful(code, read)));
+    // A URL that was not read (a status-only crawl, a redirect) has no
+    // extraction of its own; whether its link checks mean anything depends
+    // on whether the crawl read links anywhere: with none, every URL is an
+    // orphan.
+    let links_read = extracted.values().any(|read| read.links);
+    let unread = ExtractOptions { links: links_read, ..ExtractOptions::default() };
+    issues.retain(|(id, code, _)| meaningful(code, extracted.get(id).unwrap_or(&unread)));
     store.save_issues(crawl_id, &issues)?;
     tracing::info!(
         pages_s = pages_done.as_secs_f64(),

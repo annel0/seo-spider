@@ -48,6 +48,7 @@ Settings come in layers: a preset, then a TOML file (`--config`), then flags.
 
 | Preset | Reads |
 |---|---|
+| `headers` | status and response headers (HEAD, no body) of the start URLs and sitemap URLs |
 | `minimal` | status, headers and `<head>` of the start URLs and sitemap URLs; nothing else requested |
 | `seo` (default) | whole raw HTML, links followed, resources and external links checked |
 | `js` | `seo` plus rendering |

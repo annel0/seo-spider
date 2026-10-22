@@ -116,8 +116,11 @@ impl CrawlConfig {
         changed
     }
 
-    /// A named starting point for the settings:
+    /// A named starting point for the settings, from the least downloaded
+    /// to the most:
     ///
+    /// - `headers`: status and response headers only (HEAD requests, no
+    ///   body), URLs from the start list and sitemaps;
     /// - `minimal`: response headers and `<head>` only, URLs from the start
     ///   list and sitemaps, nothing else requested;
     /// - `seo` (the default): the whole raw HTML, links followed, resources
@@ -127,6 +130,14 @@ impl CrawlConfig {
     pub fn preset(name: &str) -> Option<Self> {
         let mut config = CrawlConfig::default();
         match name {
+            "headers" => {
+                config.fetch = FetchLevel::Status;
+                config.follow_links = false;
+                config.use_sitemaps = true;
+                config.check_external = false;
+                config.check_resources = false;
+                config.extract = ExtractOptions::head_only();
+            }
             "minimal" => {
                 config.fetch = FetchLevel::Head;
                 config.http.http2 = true;
@@ -441,6 +452,9 @@ mod tests {
 
     #[test]
     fn presets_differ_where_documented() {
+        let headers = CrawlConfig::preset("headers").unwrap();
+        assert_eq!(headers.fetch, FetchLevel::Status);
+        assert!(!headers.follow_links && headers.use_sitemaps && !headers.check_resources);
         let minimal = CrawlConfig::preset("minimal").unwrap();
         assert_eq!(minimal.fetch, FetchLevel::Head);
         assert!(!minimal.follow_links && minimal.use_sitemaps);
