@@ -242,7 +242,8 @@ async fn run(mut config: CrawlConfig, store: Store, control: CrawlControl, resum
     if let (Some(crawl_id), Some(registered)) = (resume, &registered) {
         let replayed = Instant::now();
         let reads_documents = config.fetch != FetchLevel::Status;
-        resume::replay(&store, crawl_id, &mut frontier, registered, &rules, reads_documents, &mut summary)?;
+        let again = resume::replay(&store, crawl_id, &mut frontier, registered, &rules, reads_documents, &mut summary)?;
+        store.delete_urls(&again)?;
         // An interrupted crawl never wrote which of its URLs robots.txt
         // disallows; robots.txt is read again, so it says it again.
         for &index in &registered.internal {
@@ -1515,13 +1516,11 @@ mod tests {
         let (store, summary) = crawl.await.unwrap().unwrap();
         assert_eq!(summary.urls, 3);
         let missing: Vec<String> = store
-            .connection()
-            .prepare("SELECT u.url FROM issues i JOIN urls u ON u.id = i.url_id WHERE i.code = 'title_missing'")
+            .query_rows("SELECT u.url FROM issues i JOIN urls u ON u.id = i.url_id WHERE i.code = 'title_missing'", &[])
             .unwrap()
-            .query_map([], |row| row.get(0))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap();
+            .iter()
+            .map(|row| row.get(0).unwrap())
+            .collect();
         assert_eq!(missing, [format!("{}b", summary_start(&store))]);
         drop(store);
         let _ = std::fs::remove_file(&path);
@@ -1557,16 +1556,15 @@ mod tests {
     /// (path, depth, has facts) of every URL of the crawl, by path.
     fn crawled(store: &Store, crawl_id: i64) -> Vec<(String, Option<u32>, bool)> {
         let mut rows: Vec<(String, Option<u32>, bool)> = store
-            .connection()
-            .prepare(
-                "SELECT u.url, u.depth, EXISTS (SELECT 1 FROM facts f WHERE f.url_id = u.id)
+            .query_rows(
+                "SELECT u.url, u.depth, (SELECT count(*) FROM facts f WHERE f.url_id = u.id)
                  FROM urls u WHERE u.crawl_id = ?1",
+                &seo_store::params![crawl_id],
             )
             .unwrap()
-            .query_map([crawl_id], |row| Ok((row.get::<_, String>(0)?, row.get(1)?, row.get(2)?)))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap();
+            .iter()
+            .map(|row| (row.get::<String>(0).unwrap(), row.get(1).unwrap(), row.get(2).unwrap()))
+            .collect();
         for row in &mut rows {
             row.0 = Url::parse(&row.0).unwrap().path().to_string();
         }
@@ -1582,48 +1580,67 @@ mod tests {
         let temp = |name: &str| {
             let path = std::env::temp_dir().join(format!("seo-crawl-{name}-{}.sqlite", std::process::id()));
             let _ = std::fs::remove_file(&path);
-            path
+            path.to_string_lossy().into_owned()
+        };
+        let files = [temp("whole"), temp("stopped"), temp("killed")];
+        continued_crawl(&files).await;
+        for file in files {
+            let _ = std::fs::remove_file(file);
+        }
+    }
+
+    /// The same on the database servers of `SEO_SPIDER_TEST_POSTGRES` and
+    /// `SEO_SPIDER_TEST_MYSQL`, when given.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_continued_crawl_on_servers() {
+        for name in ["SEO_SPIDER_TEST_POSTGRES", "SEO_SPIDER_TEST_MYSQL"] {
+            if let Ok(target) = std::env::var(name) {
+                continued_crawl(&[target.clone(), target.clone(), target]).await;
+            }
+        }
+    }
+
+    /// Crawls the tree whole into `targets[0]`, then stopped and continued
+    /// into `targets[1]`, then killed and continued into `targets[2]`.
+    async fn continued_crawl(targets: &[String; 3]) {
+        let one = |store: &Store, sql: &str, crawl_id: i64| -> seo_store::Row {
+            store.query_row(sql, &seo_store::params![crawl_id]).unwrap().unwrap()
         };
         let (start, _) = site(tree()).await;
-        let whole_path = temp("whole");
-        let (whole, summary) = crawl(slow_config(start), Store::open(&whole_path).unwrap()).await.unwrap();
+        let (whole, summary) = crawl(slow_config(start), Store::open(&targets[0]).unwrap()).await.unwrap();
         let expected = crawled(&whole, summary.crawl_id);
         assert_eq!(expected.len(), 9);
+        drop(whole);
 
         // Stopped once three URLs are in, then continued.
         let (start, requests) = site(tree()).await;
-        let path = temp("stopped");
         let stop = Arc::new(AtomicBool::new(false));
         let (progress, mut seen) = tokio::sync::watch::channel(CrawlProgress::default());
         let control = CrawlControl { stop: stop.clone(), progress: Some(progress), ..Default::default() };
-        let first = tokio::spawn(crawl_with(slow_config(start.clone()), Store::open(&path).unwrap(), control));
+        let first = tokio::spawn(crawl_with(slow_config(start.clone()), Store::open(&targets[1]).unwrap(), control));
         while seen.borrow_and_update().urls < 3 {
             seen.changed().await.unwrap();
         }
         stop.store(true, Ordering::SeqCst);
         let (store, cut) = first.await.unwrap().unwrap();
         assert!(cut.stopped && cut.urls < 9, "the crawl was cut: {} URLs", cut.urls);
-        let stopped: bool = store.connection().query_row("SELECT stopped FROM crawls", [], |row| row.get(0)).unwrap();
+        let stopped: bool = one(&store, "SELECT stopped FROM crawls WHERE id = ?1", cut.crawl_id).get(0).unwrap();
         assert!(stopped);
         let config: CrawlConfig = serde_json::from_str(&store.crawl_config(cut.crawl_id).unwrap()).unwrap();
         let (store, done) = continue_with(config, store, cut.crawl_id, CrawlControl::default()).await.unwrap();
         assert_eq!((done.crawl_id, done.urls, done.stopped), (cut.crawl_id, 9, false));
         assert_eq!(crawled(&store, done.crawl_id), expected);
         assert_eq!(requests.load(Ordering::SeqCst), 9, "no URL is requested twice");
-        let (finished, stopped): (Option<String>, bool) = store
-            .connection()
-            .query_row("SELECT finished_at, stopped FROM crawls", [], |row| Ok((row.get(0)?, row.get(1)?)))
-            .unwrap();
-        assert!(finished.is_some() && !stopped);
+        let row = one(&store, "SELECT finished_at, stopped FROM crawls WHERE id = ?1", done.crawl_id);
+        assert!(row.get::<Option<String>>(0).unwrap().is_some() && !row.get::<bool>(1).unwrap());
         drop(store);
 
         // Killed mid-crawl: nothing closes it, and the start page's facts
         // are lost as if the run ended between its two writes.
         let (start, requests) = site(tree()).await;
-        let path = temp("killed");
         let (progress, mut seen) = tokio::sync::watch::channel(CrawlProgress::default());
         let control = CrawlControl { progress: Some(progress), ..Default::default() };
-        let killed = tokio::spawn(crawl_with(slow_config(start.clone()), Store::open(&path).unwrap(), control));
+        let killed = tokio::spawn(crawl_with(slow_config(start.clone()), Store::open(&targets[2]).unwrap(), control));
         while seen.borrow_and_update().urls < 3 {
             seen.changed().await.unwrap();
         }
@@ -1632,29 +1649,25 @@ mod tests {
         let _ = killed.await;
         // The writer thread applies what it was handed and lets go.
         tokio::time::sleep(Duration::from_millis(300)).await;
-        let store = Store::open(&path).unwrap();
-        let (written, finished): (usize, Option<String>) = store
-            .connection()
-            .query_row("SELECT (SELECT count(*) FROM urls), finished_at FROM crawls", [], |row| Ok((row.get(0)?, row.get(1)?)))
-            .unwrap();
+        let store = Store::open(&targets[2]).unwrap();
+        let row = one(&store, "SELECT (SELECT count(*) FROM urls WHERE crawl_id = ?1), finished_at FROM crawls WHERE id = ?1", crawl_id);
+        let (written, finished): (usize, Option<String>) = (row.get(0).unwrap(), row.get(1).unwrap());
         assert!(written < 9 && finished.is_none(), "{written} URLs written, finished {finished:?}");
         store
-            .connection()
-            .execute(&format!("DELETE FROM facts WHERE url_id = (SELECT id FROM urls WHERE url = '{start}')"), [])
+            .execute(
+                "DELETE FROM facts WHERE url_id = (SELECT id FROM urls WHERE crawl_id = ?1 AND url = ?2)",
+                &seo_store::params![crawl_id, start.as_str()],
+            )
             .unwrap();
         let config: CrawlConfig = serde_json::from_str(&store.crawl_config(crawl_id).unwrap()).unwrap();
         let (store, done) = continue_with(config, store, crawl_id, CrawlControl::default()).await.unwrap();
         assert_eq!(done.urls, 9);
         assert_eq!(crawled(&store, crawl_id), expected);
         assert_eq!(requests.load(Ordering::SeqCst), 10, "only the page without facts is requested again");
-        drop((store, whole));
-        for name in ["whole", "stopped", "killed"] {
-            let _ = std::fs::remove_file(temp(name));
-        }
     }
 
     fn summary_start(store: &Store) -> String {
-        store.connection().query_row("SELECT start_url FROM crawls", [], |row| row.get(0)).unwrap()
+        store.query_row("SELECT start_url FROM crawls", &[]).unwrap().unwrap().get(0).unwrap()
     }
 
     fn url(text: &str) -> Url {

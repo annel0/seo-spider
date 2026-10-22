@@ -55,8 +55,9 @@ fn is_resource(url: &SavedUrl) -> bool {
 /// Discovers again from the stored facts of every page written, a chunk at
 /// a time (decoded and read in parallel). Queues what it finds that no row
 /// has, and pages whose response was written but whose facts were not (the
-/// run ended between the two): they are requested again under their id.
-/// Counts what was written into `summary`.
+/// run ended between the two): they are requested again under their id,
+/// which it returns for their rows to be removed first. Counts what was
+/// written into `summary`.
 pub(crate) fn replay(
     store: &Store,
     crawl_id: i64,
@@ -65,7 +66,8 @@ pub(crate) fn replay(
     rules: &Rules,
     reads_documents: bool,
     summary: &mut CrawlSummary,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<i64>> {
+    let mut again = Vec::new();
     store.for_each_url_chunk(crawl_id, 1024, |chunk| {
         let found: Vec<Found> = {
             let frontier = &*frontier;
@@ -95,6 +97,7 @@ pub(crate) fn replay(
         for found in found {
             if found.again {
                 frontier.requeue(found.index, found.depth);
+                again.push(frontier.known[found.index].id);
                 continue;
             }
             summary.urls += 1;
@@ -109,7 +112,8 @@ pub(crate) fn replay(
             }
         }
         Ok(())
-    })
+    })?;
+    Ok(again)
 }
 
 struct Found {

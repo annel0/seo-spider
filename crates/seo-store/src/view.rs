@@ -4,10 +4,9 @@
 //! crawl.
 
 use anyhow::{bail, Result};
-use rusqlite::{params, params_from_iter, types::Value};
 use serde::Serialize;
 
-use crate::Store;
+use crate::{params, Param, Store};
 
 /// A crawl in the file.
 #[derive(Debug, Clone, Serialize)]
@@ -78,7 +77,7 @@ const HTML: &str = "(lower(u.content_type) LIKE 'text/html%' OR lower(u.content_
 
 /// The URLs a table lists: key and SQL condition.
 pub const SCOPES: &[(&str, &str)] = &[
-    ("all", "1"),
+    ("all", "1 = 1"),
     ("internal", "u.internal = 1"),
     ("external", "u.internal = 0"),
     ("pages", "u.internal = 1 AND (lower(u.content_type) LIKE 'text/html%' OR lower(u.content_type) LIKE 'application/xhtml%')"),
@@ -87,7 +86,7 @@ pub const SCOPES: &[(&str, &str)] = &[
 
 /// Filters within a table: key and SQL condition.
 pub const FILTERS: &[(&str, &str)] = &[
-    ("all", "1"),
+    ("all", "1 = 1"),
     ("html", HTML),
     ("js", "(lower(u.content_type) LIKE '%javascript%' OR lower(u.content_type) LIKE '%ecmascript%')"),
     ("css", "lower(u.content_type) LIKE 'text/css%'"),
@@ -132,25 +131,26 @@ fn effective_value(column: &str) -> String {
 }
 
 impl Store {
-    /// Every crawl in the file, newest first.
+    /// Every crawl in the store, newest first.
     pub fn crawls(&self) -> Result<Vec<CrawlInfo>> {
-        let mut select = self.conn.prepare(
+        let mut crawls = Vec::new();
+        self.query(
             "SELECT c.id, c.start_url, c.started_at, c.finished_at,
                     (SELECT count(*) FROM urls u WHERE u.crawl_id = c.id), c.stopped
              FROM crawls c ORDER BY c.id DESC",
-        )?;
-        let crawls = select
-            .query_map([], |row| {
-                Ok(CrawlInfo {
+            &[],
+            |row| {
+                crawls.push(CrawlInfo {
                     id: row.get(0)?,
                     start_url: row.get(1)?,
                     started_at: row.get(2)?,
                     finished_at: row.get(3)?,
                     urls: row.get(4)?,
                     stopped: row.get(5)?,
-                })
-            })?
-            .collect::<rusqlite::Result<_>>()?;
+                });
+                Ok(())
+            },
+        )?;
         Ok(crawls)
     }
 
@@ -160,10 +160,10 @@ impl Store {
             bail!("unknown scope {:?}", query.scope);
         };
         let mut conditions = vec!["u.crawl_id = ?1".to_string(), scope.to_string()];
-        let mut values: Vec<Value> = vec![Value::Integer(crawl_id)];
+        let mut values: Vec<Param> = vec![Param::Int(crawl_id)];
         match query.filter.strip_prefix("issue:") {
             Some(code) => {
-                values.push(Value::Text(code.to_string()));
+                values.push(code.into());
                 conditions.push(format!(
                     "u.id IN (SELECT url_id FROM issues WHERE crawl_id = ?1 AND code = ?{})",
                     values.len()
@@ -175,9 +175,10 @@ impl Store {
             },
         }
         if let Some(search) = query.search.as_deref().map(str::trim).filter(|search| !search.is_empty()) {
-            let escaped = search.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
-            values.push(Value::Text(format!("%{escaped}%")));
-            conditions.push(format!("u.url LIKE ?{} ESCAPE '\\'", values.len()));
+            // `!` escapes: a backslash means something else to MySQL.
+            let escaped = search.to_lowercase().replace('!', "!!").replace('%', "!%").replace('_', "!_");
+            values.push(format!("%{escaped}%").into());
+            conditions.push(format!("lower(u.url) LIKE ?{} ESCAPE '!'", values.len()));
         }
         let Some(order) = sort_expression(&query.sort) else {
             bail!("unknown sort {:?}", query.sort);
@@ -185,29 +186,28 @@ impl Store {
         let direction = if query.descending { "DESC" } else { "ASC" };
         let filter = conditions.join(" AND ");
 
-        let total: i64 =
-            self.conn.query_row(&format!("SELECT count(*) {ROWS_FROM} WHERE {filter}"), params_from_iter(&values), |row| {
-                row.get(0)
-            })?;
+        let total: i64 = match self.query_row(&format!("SELECT count(*) {ROWS_FROM} WHERE {filter}"), &values)? {
+            Some(row) => row.get(0)?,
+            None => 0,
+        };
         let sql = format!(
             "{} WHERE {filter} ORDER BY {order} IS NULL, {order} {direction}, u.id LIMIT {} OFFSET {}",
             crate::SELECT_URL,
             query.limit.clamp(1, 5000),
             query.offset.max(0)
         );
-        let mut select = self.conn.prepare(&sql)?;
-        let mut found = select.query(params_from_iter(&values))?;
         let mut rows = Vec::new();
-        while let Some(row) = found.next()? {
+        self.query(&sql, &values, |row| {
             rows.push(StoredRow { url: crate::encoded_url(row)?.decode()?, issues: 0 });
-        }
+            Ok(())
+        })?;
         if !rows.is_empty() {
             let ids = rows.iter().map(|row| row.url.id.to_string()).collect::<Vec<_>>().join(",");
-            let mut select =
-                self.conn.prepare(&format!("SELECT url_id, count(*) FROM issues WHERE url_id IN ({ids}) GROUP BY url_id"))?;
-            let counts: std::collections::HashMap<i64, i64> = select
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .collect::<rusqlite::Result<_>>()?;
+            let mut counts = std::collections::HashMap::new();
+            self.query(&format!("SELECT url_id, count(*) FROM issues WHERE url_id IN ({ids}) GROUP BY url_id"), &[], |row| {
+                counts.insert(row.get::<i64>(0)?, row.get::<i64>(1)?);
+                Ok(())
+            })?;
             for row in &mut rows {
                 row.issues = counts.get(&row.url.id).copied().unwrap_or(0);
             }
@@ -218,7 +218,7 @@ impl Store {
     /// How many URLs each (scope, filter) pair keeps, in one pass over the
     /// crawl: keys of `SCOPES` and `FILTERS`.
     pub fn filter_counts(&self, crawl_id: i64, pairs: &[(&str, &str)]) -> Result<Vec<i64>> {
-        let mut sums = Vec::with_capacity(pairs.len());
+        let mut counts = Vec::with_capacity(pairs.len());
         for (scope, filter) in pairs {
             let Some((_, scope)) = SCOPES.iter().find(|(key, _)| key == scope) else {
                 bail!("unknown scope {scope:?}");
@@ -226,46 +226,45 @@ impl Store {
             let Some((_, filter)) = FILTERS.iter().find(|(key, _)| key == filter) else {
                 bail!("unknown filter {filter:?}");
             };
-            sums.push(format!("coalesce(sum(CASE WHEN ({scope}) AND ({filter}) THEN 1 ELSE 0 END), 0)"));
+            counts.push(format!("count(CASE WHEN ({scope}) AND ({filter}) THEN 1 END)"));
         }
-        if sums.is_empty() {
+        if counts.is_empty() {
             return Ok(Vec::new());
         }
-        let sql = format!("SELECT {} {ROWS_FROM} WHERE u.crawl_id = ?1", sums.join(", "));
-        self.conn
-            .query_row(&sql, params![crawl_id], |row| (0..pairs.len()).map(|at| row.get(at)).collect())
-            .map_err(Into::into)
+        let sql = format!("SELECT {} {ROWS_FROM} WHERE u.crawl_id = ?1", counts.join(", "));
+        match self.query_row(&sql, &params![crawl_id])? {
+            Some(row) => (0..pairs.len()).map(|at| row.get(at)).collect(),
+            None => Ok(vec![0; pairs.len()]),
+        }
     }
 
     /// Counts by group for the overview, over the crawl's internal URLs.
     pub fn overview(&self, crawl_id: i64) -> Result<Overview> {
         let html = "lower(u.content_type) LIKE 'text/html%'";
         let grouped = |sql: &str| -> Result<Vec<(String, i64)>> {
-            let mut select = self.conn.prepare(sql)?;
-            let rows = select
-                .query_map(params![crawl_id], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .collect::<rusqlite::Result<_>>()?;
-            Ok(rows)
+            self.query_rows(sql, &params![crawl_id])?.iter().map(|row| Ok((row.get(0)?, row.get(1)?))).collect()
         };
         let numbered = |sql: &str| -> Result<Vec<(i64, i64)>> {
-            let mut select = self.conn.prepare(sql)?;
-            let rows = select
-                .query_map(params![crawl_id], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .collect::<rusqlite::Result<_>>()?;
-            Ok(rows)
+            self.query_rows(sql, &params![crawl_id])?.iter().map(|row| Ok((row.get(0)?, row.get(1)?))).collect()
         };
-        let (urls, pages, average_ttfb_ms, bytes) = self.conn.query_row(
+        let totals = self.query_row(
             &format!(
-                "SELECT count(*), coalesce(sum({html}), 0), coalesce(avg(CASE WHEN status > 0 THEN ttfb_ms END), 0),
+                "SELECT count(*), count(CASE WHEN {html} THEN 1 END),
+                        coalesce(sum(CASE WHEN status > 0 THEN ttfb_ms END), 0), count(CASE WHEN status > 0 THEN 1 END),
                         coalesce(sum(size), 0)
                  FROM urls u WHERE crawl_id = ?1 AND internal = 1"
             ),
-            params![crawl_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            &params![crawl_id],
         )?;
+        let (urls, pages, ttfb_total, answered, bytes): (i64, i64, i64, i64, i64) = match totals {
+            Some(row) => (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?),
+            None => (0, 0, 0, 0, 0),
+        };
+        let average_ttfb_ms = if answered > 0 { ttfb_total as f64 / answered as f64 } else { 0.0 };
         let statuses = grouped(
             "SELECT CASE WHEN blocked_by_robots = 1 THEN 'blocked' WHEN status = 0 THEN 'no_response'
-                         ELSE (status / 100) || 'xx' END AS class, count(*)
+                         WHEN status < 200 THEN '1xx' WHEN status < 300 THEN '2xx' WHEN status < 400 THEN '3xx'
+                         WHEN status < 500 THEN '4xx' ELSE '5xx' END AS class, count(*)
              FROM urls WHERE crawl_id = ?1 AND internal = 1 GROUP BY class ORDER BY class",
         )?;
         let content_types = grouped(
@@ -279,7 +278,7 @@ impl Store {
                  WHEN lower(content_type) LIKE 'application/pdf%' THEN 'pdf'
                  WHEN lower(content_type) LIKE '%json%' OR lower(content_type) LIKE '%xml%' THEN 'data'
                  ELSE 'other' END AS kind, count(*)
-             FROM urls WHERE crawl_id = ?1 AND internal = 1 GROUP BY kind ORDER BY count(*) DESC",
+             FROM urls WHERE crawl_id = ?1 AND internal = 1 GROUP BY kind ORDER BY count(*) DESC, kind",
         )?;
         let depths = numbered(&format!(
             "SELECT coalesce(depth, -1) AS d, count(*) FROM urls u
@@ -288,7 +287,7 @@ impl Store {
         let response_times = numbered(
             "SELECT CASE WHEN ttfb_ms < 100 THEN 100 WHEN ttfb_ms < 300 THEN 300 WHEN ttfb_ms < 600 THEN 600
                          WHEN ttfb_ms < 1000 THEN 1000 WHEN ttfb_ms < 2000 THEN 2000 ELSE 0 END AS bucket, count(*)
-             FROM urls WHERE crawl_id = ?1 AND internal = 1 AND status > 0 GROUP BY bucket",
+             FROM urls WHERE crawl_id = ?1 AND internal = 1 AND status > 0 GROUP BY bucket ORDER BY bucket",
         )?;
         let robots = "lower(coalesce(CASE WHEN fr.url_id IS NULL THEN fw.robots ELSE fr.robots END, ''))";
         let canonical = "CASE WHEN fr.url_id IS NULL THEN fw.canonical ELSE fr.canonical END";
@@ -302,7 +301,7 @@ impl Store {
                  ELSE 'indexable' END AS state, count(*)
              {ROWS_FROM} WHERE u.crawl_id = ?1 AND u.internal = 1
                AND ({html} OR u.blocked_by_robots = 1 OR u.status = 0 OR u.status BETWEEN 300 AND 399)
-             GROUP BY state ORDER BY count(*) DESC"
+             GROUP BY state ORDER BY count(*) DESC, state"
         ))?;
         Ok(Overview {
             urls,
@@ -319,29 +318,27 @@ impl Store {
 
     /// How many URLs have each issue code.
     pub fn issue_counts(&self, crawl_id: i64) -> Result<Vec<(String, i64)>> {
-        let mut select = self.conn.prepare_cached(
-            "SELECT code, count(DISTINCT url_id) AS urls FROM issues WHERE crawl_id = ?1 GROUP BY code ORDER BY urls DESC",
-        )?;
-        let counts = select
-            .query_map(params![crawl_id], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect::<rusqlite::Result<_>>()?;
-        Ok(counts)
+        self.query_rows(
+            "SELECT code, count(DISTINCT url_id) AS urls FROM issues WHERE crawl_id = ?1 GROUP BY code ORDER BY urls DESC, code",
+            &params![crawl_id],
+        )?
+        .iter()
+        .map(|row| Ok((row.get(0)?, row.get(1)?)))
+        .collect()
     }
 
     /// The issues of one URL: code and detail.
     pub fn url_issues(&self, url_id: i64) -> Result<Vec<(String, Option<String>)>> {
-        let mut select = self.conn.prepare_cached("SELECT code, detail FROM issues WHERE url_id = ?1")?;
-        let issues = select
-            .query_map(params![url_id], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect::<rusqlite::Result<_>>()?;
-        Ok(issues)
+        self.query_rows("SELECT code, detail FROM issues WHERE url_id = ?1", &params![url_id])?
+            .iter()
+            .map(|row| Ok((row.get(0)?, row.get(1)?)))
+            .collect()
     }
 
     /// Indexes the view's per-URL lookups use. Not made by a crawl: they
     /// cost its writes and only a view reads them.
     pub fn ensure_view_indexes(&self) -> Result<()> {
-        self.conn.execute_batch("CREATE INDEX IF NOT EXISTS issues_url ON issues (url_id);")?;
-        Ok(())
+        self.ensure_index(&crate::schema::ISSUES_BY_URL)
     }
 }
 
@@ -369,8 +366,20 @@ mod tests {
     #[test]
     fn rows_are_filtered_sorted_searched_and_counted() {
         let path = std::env::temp_dir().join(format!("seo-store-view-{}.sqlite", std::process::id()));
+        scenario(path.to_str().unwrap());
         let _ = std::fs::remove_file(&path);
-        let mut store = Store::open(&path).unwrap();
+    }
+
+    #[test]
+    fn rows_on_servers() {
+        let _one = crate::tests::SERVER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        for target in crate::tests::servers() {
+            scenario(&target);
+        }
+    }
+
+    fn scenario(path: &str) {
+        let mut store = crate::tests::empty(path);
         let crawl = store.start_crawl("https://example.com/", "{}").unwrap();
         let mut writes = Vec::new();
         for (id, (url, title, status)) in [
@@ -394,7 +403,7 @@ mod tests {
         store.ensure_view_indexes().unwrap();
         drop(store);
 
-        let store = Store::open_read(&path).unwrap();
+        let store = Store::open_read(path).unwrap();
         let query = |scope: &str, filter: &str, sort: &str, descending: bool, search: Option<&str>| RowQuery {
             scope: scope.into(),
             filter: filter.into(),
@@ -436,7 +445,5 @@ mod tests {
         assert_eq!(store.crawls().unwrap()[0].urls, 4);
         let one = store.url(2).unwrap().unwrap();
         assert_eq!(one.raw.unwrap().title(), Some("About us and the long story"));
-        drop(store);
-        let _ = std::fs::remove_file(&path);
     }
 }

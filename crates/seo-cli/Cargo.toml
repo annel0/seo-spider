@@ -20,7 +20,6 @@ seo-store = { workspace = true }
 seo-checks = { workspace = true }
 seo-server = { workspace = true }
 seo-export = { workspace = true }
-rusqlite = { workspace = true }
 rayon = { workspace = true }
 mimalloc = { workspace = true }
 rustc-hash = { workspace = true }

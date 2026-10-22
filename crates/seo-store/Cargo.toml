@@ -1,6 +1,6 @@
 [package]
 name = "seo-store"
-description = "SQLite storage for crawls"
+description = "Storage for crawls: SQLite, PostgreSQL or MySQL"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,6 +12,14 @@ serde_json = { workspace = true }
 serde = { workspace = true }
 anyhow = { workspace = true }
 zstd = { workspace = true }
-
-[dev-dependencies]
 url = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+tokio-postgres = { workspace = true }
+tokio-postgres-rustls = { workspace = true }
+rustls = { workspace = true }
+webpki-roots = { workspace = true }
+futures-executor = { workspace = true }
+futures-util = { workspace = true }
+bytes = { workspace = true }
+mysql = { workspace = true }

@@ -47,7 +47,13 @@ pub struct ServerOptions {
 struct AppState {
     db: PathBuf,
     running: Mutex<Option<Running>>,
+    /// Read connections kept between requests: a database server's cost a
+    /// connection (and a thread) each to open.
+    readers: std::sync::Mutex<Vec<Store>>,
 }
+
+/// Read connections kept open at most.
+const READERS: usize = 4;
 
 /// Serves until the process ends.
 pub async fn serve(options: ServerOptions) -> Result<()> {
@@ -56,7 +62,8 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
     }
     // Creates the file and its schema when there is none yet.
     drop(Store::open(&options.db)?);
-    let state = Arc::new(AppState { db: options.db.clone(), running: Mutex::new(None) });
+    let state =
+        Arc::new(AppState { db: options.db.clone(), running: Mutex::new(None), readers: std::sync::Mutex::new(Vec::new()) });
     let mut api = Router::new()
         .route("/api/presets", get(presets))
         .route("/api/presets/{name}/config", get(preset_config))
@@ -83,7 +90,7 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
     }
     let app = api.merge(assets::router(options.ui_dir.clone()));
     let listener = tokio::net::TcpListener::bind(options.bind).await?;
-    eprintln!("seo-spider ui: http://{}/  (база {})", options.bind, options.db.display());
+    eprintln!("seo-spider ui: http://{}/  (база {})", options.bind, seo_store::describe(options.db.as_os_str()));
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -119,10 +126,29 @@ impl From<anyhow::Error> for ApiError {
 type ApiResult<T> = Result<Json<T>, ApiError>;
 
 /// Runs a read on the crawl file off the async threads.
-async fn read<T: Send + 'static>(state: &AppState, work: impl FnOnce(&Store) -> Result<T> + Send + 'static) -> Result<T, ApiError> {
-    let db = state.db.clone();
-    tokio::task::spawn_blocking(move || work(&Store::open_read(&db)?))
-        .await
+/// Runs a read on the store off the async threads, on a kept connection
+/// when there is one; a connection whose read failed is not kept.
+async fn read<T: Send + 'static>(
+    state: &Arc<AppState>,
+    work: impl FnOnce(&Store) -> Result<T> + Send + 'static,
+) -> Result<T, ApiError> {
+    let state = state.clone();
+    tokio::task::spawn_blocking(move || {
+        let kept = state.readers.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).pop();
+        let store = match kept {
+            Some(store) => store,
+            None => Store::open_read(&state.db)?,
+        };
+        let result = work(&store);
+        if result.is_ok() {
+            let mut readers = state.readers.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if readers.len() < READERS {
+                readers.push(store);
+            }
+        }
+        result
+    })
+    .await
         .map_err(|error| ApiError(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
         .map_err(|error| ApiError(StatusCode::BAD_REQUEST, format!("{error:#}")))
 }

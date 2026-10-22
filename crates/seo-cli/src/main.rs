@@ -61,7 +61,8 @@ enum Command {
 
 #[derive(clap::Args)]
 struct UiArgs {
-    /// The crawl file the UI works on.
+    /// The crawl file, or a database: postgres://user@host/db or
+    /// mysql://user@host/db (the password in SEO_SPIDER_DB_PASSWORD).
     #[arg(long, default_value = "crawl.sqlite")]
     db: PathBuf,
     #[arg(long, default_value = "127.0.0.1:7070")]
@@ -76,6 +77,8 @@ struct UiArgs {
 
 #[derive(clap::Args)]
 struct ContinueArgs {
+    /// The crawl file, or a database: postgres://user@host/db or
+    /// mysql://user@host/db (the password in SEO_SPIDER_DB_PASSWORD).
     #[arg(long, default_value = "crawl.sqlite")]
     db: PathBuf,
     /// Crawl id; the latest crawl by default.
@@ -103,6 +106,8 @@ struct CompareArgs {
 
 #[derive(clap::Args)]
 struct CheckArgs {
+    /// The crawl file, or a database: postgres://user@host/db or
+    /// mysql://user@host/db (the password in SEO_SPIDER_DB_PASSWORD).
     #[arg(long, default_value = "crawl.sqlite")]
     db: PathBuf,
     /// Crawl id; the latest crawl by default.
@@ -114,6 +119,8 @@ struct CheckArgs {
 struct CrawlArgs {
     /// Start URLs.
     urls: Vec<Url>,
+    /// The crawl file, or a database: postgres://user@host/db or
+    /// mysql://user@host/db (the password in SEO_SPIDER_DB_PASSWORD).
     #[arg(long, default_value = "crawl.sqlite")]
     db: PathBuf,
     /// Starting settings, least downloaded first: headers, minimal, seo, js or dump.
@@ -320,6 +327,8 @@ enum StoreHtml {
 
 #[derive(clap::Args)]
 struct ExportArgs {
+    /// The crawl file, or a database: postgres://user@host/db or
+    /// mysql://user@host/db (the password in SEO_SPIDER_DB_PASSWORD).
     #[arg(long, default_value = "crawl.sqlite")]
     db: PathBuf,
     /// Crawl id; the latest crawl by default.
@@ -340,6 +349,8 @@ enum Format {
 
 #[derive(clap::Args)]
 struct BodiesArgs {
+    /// The crawl file, or a database: postgres://user@host/db or
+    /// mysql://user@host/db (the password in SEO_SPIDER_DB_PASSWORD).
     #[arg(long, default_value = "crawl.sqlite")]
     db: PathBuf,
     /// Crawl id; the latest crawl by default.
@@ -716,7 +727,7 @@ where
         let issues = seo_crawl::run_checks(&mut store, summary.crawl_id)?;
         eprintln!("{issues} issues in {:.1} s", checks_started.elapsed().as_secs_f64());
     }
-    eprintln!("database: {}", db.display());
+    eprintln!("database: {}", seo_store::describe(db.as_os_str()));
     // Render threads hold V8 isolates; exiting without tearing them down is
     // faster and safe once the store is closed.
     drop(store);

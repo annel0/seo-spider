@@ -1,123 +1,26 @@
-//! SQLite storage for crawls. One file holds any number of crawls; each URL
-//! row carries its HTTP response, and raw and rendered facts are kept as JSON
-//! next to the columns exports and queries need.
+//! Storage for crawls: a SQLite file by default, or a PostgreSQL or MySQL
+//! database. Each URL row carries its HTTP response; raw and rendered facts
+//! are kept as compressed JSON next to the columns exports and queries need.
+//! The logic and its SQL are written once, over `Backend`; each database
+//! is a backend (see `sql`).
 
+use std::cell::RefCell;
+use std::ffi::OsStr;
 use std::path::Path;
 
+mod mysql;
+mod postgres;
+mod schema;
+mod sql;
+mod sqlite;
 mod view;
 
+pub use sql::{Backend, Dialect, FromValue, Param, Row, Value};
 pub use view::{CrawlInfo, Overview, RowQuery, RowsPage, StoredRow, FILTERS, SCOPES};
 
-use anyhow::{Context, Result};
-use rusqlite::{params, Connection, OptionalExtension};
+use anyhow::{bail, Context, Result};
+use schema::{LazyIndex, BODIES, FACTS, ISSUES, LINKS, LINKS_FROM, LINKS_TO, RENDERS, STATES, URLS};
 use seo_page::{HttpInfo, PageFacts, RenderSummary};
-
-const SCHEMA: &str = r#"
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;
-PRAGMA foreign_keys = ON;
-PRAGMA temp_store = MEMORY;
-PRAGMA cache_size = -65536;
-
-CREATE TABLE IF NOT EXISTS crawls (
-    id INTEGER PRIMARY KEY,
-    start_url TEXT NOT NULL,
-    started_at TEXT NOT NULL DEFAULT (datetime('now')),
-    finished_at TEXT,
-    config TEXT NOT NULL DEFAULT '{}',
-    -- Asked to stop before its queue ran out: `continue` can take it on.
-    stopped INTEGER NOT NULL DEFAULT 0
-);
-
--- Every URL the crawl requested, redirect hops included.
-CREATE TABLE IF NOT EXISTS urls (
-    id INTEGER PRIMARY KEY,
-    crawl_id INTEGER NOT NULL REFERENCES crawls(id),
-    url TEXT NOT NULL,
-    status INTEGER NOT NULL,
-    location TEXT,
-    content_type TEXT,
-    ttfb_ms INTEGER NOT NULL DEFAULT 0,
-    size INTEGER NOT NULL DEFAULT 0,
-    error TEXT,
-    headers TEXT NOT NULL DEFAULT '[]',
-    -- Same site as the start URL (subdomains too when the crawl covers them).
-    internal INTEGER NOT NULL,
-    depth INTEGER,
-    in_sitemap INTEGER NOT NULL DEFAULT 0,
-    blocked_by_robots INTEGER NOT NULL DEFAULT 0,
-    UNIQUE (crawl_id, url)
-);
-
--- Facts read from one document of a URL: the raw body or the rendered DOM.
-CREATE TABLE IF NOT EXISTS facts (
-    url_id INTEGER NOT NULL REFERENCES urls(id),
-    source TEXT NOT NULL,
-    title TEXT,
-    description TEXT,
-    h1 TEXT,
-    canonical TEXT,
-    robots TEXT,
-    word_count INTEGER NOT NULL,
-    text_hash TEXT NOT NULL,
-    links INTEGER NOT NULL,
-    -- PageFacts as JSON, or zstd-compressed JSON (see `decode_facts`).
-    data BLOB NOT NULL,
-    PRIMARY KEY (url_id, source)
-);
-
-CREATE TABLE IF NOT EXISTS links (
-    crawl_id INTEGER NOT NULL REFERENCES crawls(id),
-    from_url_id INTEGER NOT NULL REFERENCES urls(id),
-    source TEXT NOT NULL,
-    to_url TEXT NOT NULL,
-    anchor TEXT NOT NULL,
-    rel TEXT NOT NULL,
-    nofollow INTEGER NOT NULL,
-    position TEXT NOT NULL,
-    image INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS renders (
-    url_id INTEGER PRIMARY KEY REFERENCES urls(id),
-    final_url TEXT NOT NULL,
-    error TEXT,
-    dcl_ms INTEGER NOT NULL,
-    total_ms INTEGER NOT NULL,
-    settled INTEGER NOT NULL,
-    load_fired INTEGER NOT NULL,
-    console_errors TEXT NOT NULL,
-    resources TEXT NOT NULL
-);
-
--- Documents kept whole when the crawl dumps pages: the raw response body and
--- the rendered DOM, compressed.
-CREATE TABLE IF NOT EXISTS bodies (
-    url_id INTEGER NOT NULL REFERENCES urls(id),
-    kind TEXT NOT NULL,
-    encoding TEXT NOT NULL,
-    size INTEGER NOT NULL,
-    data BLOB NOT NULL,
-    PRIMARY KEY (url_id, kind)
-);
-
-CREATE TABLE IF NOT EXISTS issues (
-    crawl_id INTEGER NOT NULL REFERENCES crawls(id),
-    url_id INTEGER NOT NULL REFERENCES urls(id),
-    code TEXT NOT NULL,
-    detail TEXT
-);
-CREATE INDEX IF NOT EXISTS issues_code ON issues (crawl_id, code);
-"#;
-
-/// Indexes for looking up the links to or from one URL. Nothing a crawl,
-/// its checks or a whole export does needs them (those read the table in
-/// one pass), and on 5.7 million links they take 10 s to build: they are
-/// built by whatever first asks a per-URL question.
-const READ_INDEXES: &str = r#"
-CREATE INDEX IF NOT EXISTS links_to ON links (crawl_id, to_url);
-CREATE INDEX IF NOT EXISTS links_from ON links (from_url_id);
-"#;
 
 /// zstd frames start with these bytes; JSON never does.
 const ZSTD_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
@@ -142,8 +45,495 @@ pub fn encode_facts(facts: &PageFacts, level: i32) -> Result<Vec<u8>> {
     }
 }
 
+/// A crawl store: one connection to a crawl file or database.
+///
+/// Calls take `&self`; the connection is used by one call at a time, so a
+/// callback of `query` or `for_each_url_chunk` must not call the store.
 pub struct Store {
-    conn: Connection,
+    db: RefCell<Box<dyn Backend>>,
+}
+
+/// Whether a `--db` value names a database server rather than a file.
+pub fn is_server(target: &OsStr) -> bool {
+    let text = target.to_string_lossy();
+    ["postgres://", "postgresql://", "mysql://"].iter().any(|scheme| text.starts_with(scheme))
+}
+
+/// A `--db` value fit to print: a server address without its password.
+pub fn describe(target: &OsStr) -> String {
+    let text = target.to_string_lossy();
+    if !is_server(target) {
+        return text.into_owned();
+    }
+    match url::Url::parse(&text) {
+        Ok(mut url) => {
+            if url.password().is_some() {
+                let _ = url.set_password(Some("***"));
+            }
+            url.to_string()
+        }
+        Err(_) => "(database address)".into(),
+    }
+}
+
+/// Now in UTC as SQLite's `datetime('now')` writes it.
+fn now() -> String {
+    let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_secs() as i64);
+    let (days, rest) = (seconds.div_euclid(86_400), seconds.rem_euclid(86_400));
+    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02}", rest / 3600, rest / 60 % 60, rest % 60)
+}
+
+impl Store {
+    /// Opens a crawl file (a path) or database (`postgres://user@host/db`,
+    /// `mysql://user@host/db`; the password from the address or from
+    /// `SEO_SPIDER_DB_PASSWORD`, `PGPASSWORD`, `MYSQL_PWD`), and creates the
+    /// schema where it is missing.
+    pub fn open(target: impl AsRef<OsStr>) -> Result<Self> {
+        let store = Store::connect(target.as_ref(), false)?;
+        store.create_schema()?;
+        Ok(store)
+    }
+
+    /// Opens a crawl file or database for reading, alongside a crawl writing
+    /// to it; a file is opened read-only.
+    pub fn open_read(target: impl AsRef<OsStr>) -> Result<Self> {
+        Store::connect(target.as_ref(), true)
+    }
+
+    fn connect(target: &OsStr, read_only: bool) -> Result<Self> {
+        let text = target.to_string_lossy();
+        let backend: Box<dyn Backend> = if text.starts_with("mysql://") {
+            Box::new(mysql::Mysql::connect(&text)?)
+        } else if is_server(target) {
+            Box::new(postgres::Postgres::connect(&text)?)
+        } else if read_only {
+            Box::new(sqlite::Sqlite::open_read(Path::new(target))?)
+        } else {
+            Box::new(sqlite::Sqlite::open(Path::new(target))?)
+        };
+        Ok(Store { db: RefCell::new(backend) })
+    }
+
+    fn create_schema(&self) -> Result<()> {
+        let mut db = self.db.borrow_mut();
+        let dialect = db.dialect();
+        db.batch(schema::schema(dialect)).context("create schema")?;
+        if dialect == Dialect::Sqlite {
+            // Files from before `crawls.stopped`.
+            let mut has = false;
+            db.query("SELECT count(*) FROM pragma_table_info('crawls') WHERE name = 'stopped'", &[], &mut |row| {
+                has = row.get::<i64>(0)? > 0;
+                Ok(())
+            })?;
+            if !has {
+                db.batch("ALTER TABLE crawls ADD COLUMN stopped INTEGER NOT NULL DEFAULT 0;")?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn dialect(&self) -> Dialect {
+        self.db.borrow().dialect()
+    }
+
+    /// The rows of a query, one at a time. SQL as `sql` describes it:
+    /// standard, with `?1`-style parameters.
+    pub fn query(&self, sql: &str, params: &[Param], mut each: impl FnMut(Row) -> Result<()>) -> Result<()> {
+        self.db.borrow_mut().query(sql, params, &mut each).with_context(|| format!("query {}", first_line(sql)))
+    }
+
+    /// Every row of a query.
+    pub fn query_rows(&self, sql: &str, params: &[Param]) -> Result<Vec<Row>> {
+        let mut rows = Vec::new();
+        self.query(sql, params, |row| {
+            rows.push(row);
+            Ok(())
+        })?;
+        Ok(rows)
+    }
+
+    /// The first row of a query, if any.
+    pub fn query_row(&self, sql: &str, params: &[Param]) -> Result<Option<Row>> {
+        let mut first = None;
+        self.query(sql, params, |row| {
+            first.get_or_insert(row);
+            Ok(())
+        })?;
+        Ok(first)
+    }
+
+    pub fn execute(&self, sql: &str, params: &[Param]) -> Result<u64> {
+        self.db.borrow_mut().execute(sql, params).with_context(|| format!("run {}", first_line(sql)))
+    }
+
+    /// `work` in one transaction: committed if it succeeds, rolled back if not.
+    fn transaction<T>(&self, work: impl FnOnce(&mut dyn Backend) -> Result<T>) -> Result<T> {
+        let mut db = self.db.borrow_mut();
+        db.begin()?;
+        match work(db.as_mut()) {
+            Ok(value) => {
+                db.commit()?;
+                Ok(value)
+            }
+            Err(error) => {
+                let _ = db.rollback();
+                Err(error)
+            }
+        }
+    }
+
+    pub fn start_crawl(&self, start_url: &str, config_json: &str) -> Result<i64> {
+        self.db.borrow_mut().insert_returning_id(
+            "INSERT INTO crawls (start_url, started_at, config) VALUES (?1, ?2, ?3)",
+            &params![start_url, now(), config_json],
+        )
+    }
+
+    /// Closes a crawl; `stopped` when it was asked to stop with URLs still
+    /// queued.
+    pub fn finish_crawl(&self, crawl_id: i64, stopped: bool) -> Result<()> {
+        self.execute("UPDATE crawls SET finished_at = ?2, stopped = ?3 WHERE id = ?1", &params![crawl_id, now(), stopped])?;
+        Ok(())
+    }
+
+    /// Opens a closed or interrupted crawl again, to go on with it under
+    /// `config_json` (its settings, perhaps with a higher limit).
+    pub fn reopen_crawl(&self, crawl_id: i64, config_json: &str) -> Result<()> {
+        let exists = self.query_row("SELECT id FROM crawls WHERE id = ?1", &params![crawl_id])?.is_some();
+        anyhow::ensure!(exists, "no crawl {crawl_id}");
+        self.execute(
+            "UPDATE crawls SET finished_at = NULL, stopped = 0, config = ?2 WHERE id = ?1",
+            &params![crawl_id, config_json],
+        )?;
+        Ok(())
+    }
+
+    /// The URLs a crawl has written, in id order (which is the order it
+    /// found them), without their facts.
+    pub fn saved_urls(&self, crawl_id: i64) -> Result<Vec<SavedUrl>> {
+        let mut urls = Vec::new();
+        self.query(
+            "SELECT id, url, internal, depth, status, content_type, error, blocked_by_robots
+             FROM urls WHERE crawl_id = ?1 ORDER BY id",
+            &params![crawl_id],
+            |row| {
+                urls.push(SavedUrl {
+                    id: row.get(0)?,
+                    url: row.get(1)?,
+                    internal: row.get(2)?,
+                    depth: row.get(3)?,
+                    status: row.get(4)?,
+                    content_type: row.get(5)?,
+                    error: row.get(6)?,
+                    blocked_by_robots: row.get(7)?,
+                });
+                Ok(())
+            },
+        )?;
+        Ok(urls)
+    }
+
+    /// Removes URLs and all that hangs on them, for a continued crawl to
+    /// write them again.
+    pub fn delete_urls(&self, ids: &[i64]) -> Result<()> {
+        for chunk in ids.chunks(500) {
+            let list = chunk.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+            self.transaction(|db| {
+                for (table, column) in
+                    [("facts", "url_id"), ("renders", "url_id"), ("bodies", "url_id"), ("issues", "url_id"), ("links", "from_url_id"), ("urls", "id")]
+                {
+                    db.execute(&format!("DELETE FROM {table} WHERE {column} IN ({list})"), &[])?;
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Builds an index unless it is there.
+    fn ensure_index(&self, index: &LazyIndex) -> Result<()> {
+        let mut db = self.db.borrow_mut();
+        if db.index_exists(index.table, index.name)? {
+            return Ok(());
+        }
+        let (name, table) = (index.name, index.table);
+        let sql = match db.dialect() {
+            Dialect::Sqlite => format!("CREATE INDEX IF NOT EXISTS {name} ON {table} ({})", index.sqlite),
+            Dialect::Postgres => format!("CREATE INDEX IF NOT EXISTS {name} ON {table} ({})", index.postgres),
+            Dialect::Mysql => format!("CREATE INDEX {name} ON {table} ({})", index.mysql),
+        };
+        db.batch(&sql).with_context(|| format!("create index {name}"))
+    }
+
+    /// Builds the indexes for per-URL link lookups, if missing.
+    pub fn ensure_read_indexes(&self) -> Result<()> {
+        self.ensure_index(&LINKS_TO)?;
+        self.ensure_index(&LINKS_FROM)
+    }
+
+    /// The settings a crawl ran with, as JSON.
+    pub fn crawl_config(&self, crawl_id: i64) -> Result<String> {
+        match self.query_row("SELECT config FROM crawls WHERE id = ?1", &params![crawl_id])? {
+            Some(row) => row.get(0),
+            None => bail!("no crawl {crawl_id}"),
+        }
+    }
+
+    /// The most recent crawl.
+    pub fn last_crawl(&self) -> Result<Option<i64>> {
+        match self.query_row("SELECT max(id) FROM crawls", &[])? {
+            Some(row) => row.get(0),
+            None => Ok(None),
+        }
+    }
+
+    /// Turns off foreign key checks for this connection (SQLite: the other
+    /// databases have none): the crawl's writer only inserts rows whose
+    /// references it made itself, and the lookups cost a third of a link
+    /// row's insert.
+    pub fn bulk_writes(&self) -> Result<()> {
+        if self.dialect() == Dialect::Sqlite {
+            self.db.borrow_mut().batch("PRAGMA foreign_keys = OFF;")?;
+        }
+        Ok(())
+    }
+
+    /// The first URL id no row uses yet; a crawl numbers its URLs from it.
+    pub fn next_url_id(&self) -> Result<i64> {
+        match self.query_row("SELECT coalesce(max(id), 0) + 1 FROM urls", &[])? {
+            Some(row) => row.get(0),
+            None => Ok(1),
+        }
+    }
+
+    /// Applies `writes` in one transaction, each table's rows in one bulk
+    /// insert.
+    pub fn apply(&mut self, crawl_id: i64, writes: &[Write]) -> Result<()> {
+        let (mut urls, mut facts, mut links, mut renders, mut bodies, mut issues) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for write in writes {
+            match write {
+                Write::Response { id, http, internal, depth } => {
+                    urls.push(
+                        params![
+                            *id,
+                            crawl_id,
+                            &http.url,
+                            http.status,
+                            http.location.as_ref(),
+                            http.content_type.as_ref(),
+                            http.ttfb_ms,
+                            http.size,
+                            http.error.as_ref(),
+                            serde_json::to_string(&http.headers)?,
+                            *internal,
+                            *depth,
+                        ]
+                        .to_vec(),
+                    );
+                }
+                Write::Facts { url_id, facts: page, data, links: with_links } => {
+                    let source = page.source.as_str();
+                    facts.push(
+                        params![
+                            *url_id,
+                            source,
+                            page.title(),
+                            page.description(),
+                            page.h1().next(),
+                            page.canonicals.first(),
+                            (!page.meta_robots.is_empty()).then(|| page.meta_robots.join(", ")),
+                            page.word_count,
+                            format!("{:016x}", page.text_hash),
+                            page.links.len(),
+                            data,
+                        ]
+                        .to_vec(),
+                    );
+                    if *with_links {
+                        for link in &page.links {
+                            links.push(
+                                params![
+                                    crawl_id,
+                                    *url_id,
+                                    source,
+                                    &link.href,
+                                    &link.anchor,
+                                    link.rel.join(" "),
+                                    link.nofollow,
+                                    link.position.as_str(),
+                                    link.image,
+                                ]
+                                .to_vec(),
+                            );
+                        }
+                    }
+                }
+                Write::Render { url_id, render } => {
+                    renders.push(
+                        params![
+                            *url_id,
+                            &render.final_url,
+                            render.error.as_ref(),
+                            render.dcl_ms,
+                            render.total_ms,
+                            render.settled,
+                            render.load_fired,
+                            &render.console_errors_json,
+                            &render.resources_json,
+                        ]
+                        .to_vec(),
+                    );
+                }
+                Write::Body { url_id, kind, encoding, size, data } => {
+                    bodies.push(params![*url_id, kind.as_str(), *encoding, *size, data].to_vec());
+                }
+                Write::Issues { url_id, issues: found } => {
+                    for (code, detail) in found {
+                        issues.push(params![crawl_id, *url_id, *code, detail.as_ref()].to_vec());
+                    }
+                }
+            }
+        }
+        self.transaction(|db| {
+            for (columns, rows) in
+                [(&URLS, &urls), (&FACTS, &facts), (&LINKS, &links), (&RENDERS, &renders), (&BODIES, &bodies), (&ISSUES, &issues)]
+            {
+                if !rows.is_empty() {
+                    db.insert_rows(columns, rows)?;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// A stored document as written, with its encoding.
+    pub fn body(&self, url_id: i64, kind: BodyKind) -> Result<Option<(String, Vec<u8>)>> {
+        match self.query_row("SELECT encoding, data FROM bodies WHERE url_id = ?1 AND kind = ?2", &params![url_id, kind.as_str()])? {
+            Some(mut row) => Ok(Some((row.get(0)?, row.take_blob(1)?.unwrap_or_default()))),
+            None => Ok(None),
+        }
+    }
+
+    /// Sets (url id, click depth, listed in a sitemap, blocked by robots.txt)
+    /// for each URL.
+    pub fn set_crawl_states(&mut self, states: &[(i64, Option<u32>, bool, bool)]) -> Result<()> {
+        let rows: Vec<Vec<Param>> = states
+            .iter()
+            .map(|(url_id, depth, in_sitemap, blocked)| params![*url_id, *depth, *in_sitemap, *blocked].to_vec())
+            .collect();
+        self.transaction(|db| db.update_rows(&STATES, &rows))
+    }
+
+    /// Replaces the crawl's issues.
+    pub fn save_issues(&mut self, crawl_id: i64, issues: &[(i64, &str, Option<String>)]) -> Result<()> {
+        let rows: Vec<Vec<Param>> =
+            issues.iter().map(|(url_id, code, detail)| params![crawl_id, *url_id, *code, detail.as_ref()].to_vec()).collect();
+        self.transaction(|db| {
+            db.execute("DELETE FROM issues WHERE crawl_id = ?1", &params![crawl_id])?;
+            db.insert_rows(&ISSUES, &rows)
+        })
+    }
+
+    /// Every URL of a crawl with its facts, in insertion order.
+    pub fn urls(&self, crawl_id: i64) -> Result<Vec<StoredUrl>> {
+        let mut urls = Vec::new();
+        self.for_each_url_chunk(crawl_id, 4096, |chunk| {
+            for encoded in chunk {
+                urls.push(encoded.decode()?);
+            }
+            Ok(())
+        })?;
+        Ok(urls)
+    }
+
+    /// Every URL of a crawl in id order, `chunk` at a time, with its facts
+    /// still encoded: a reader decodes them where it likes (in parallel) and
+    /// never holds more than a chunk of them.
+    pub fn for_each_url_chunk(
+        &self,
+        crawl_id: i64,
+        chunk: usize,
+        mut each: impl FnMut(Vec<EncodedUrl>) -> Result<()>,
+    ) -> Result<()> {
+        let mut batch = Vec::with_capacity(chunk);
+        self.query(&format!("{SELECT_URL} WHERE u.crawl_id = ?1 ORDER BY u.id"), &params![crawl_id], |row| {
+            batch.push(encoded_url(row)?);
+            if batch.len() >= chunk {
+                each(std::mem::replace(&mut batch, Vec::with_capacity(chunk)))?;
+            }
+            Ok(())
+        })?;
+        if !batch.is_empty() {
+            each(batch)?;
+        }
+        Ok(())
+    }
+
+    /// One URL with its facts decoded.
+    pub fn url(&self, id: i64) -> Result<Option<StoredUrl>> {
+        match self.query_row(&format!("{SELECT_URL} WHERE u.id = ?1"), &params![id])? {
+            Some(row) => Ok(Some(encoded_url(row)?.decode()?)),
+            None => Ok(None),
+        }
+    }
+}
+
+fn first_line(sql: &str) -> &str {
+    sql.trim().lines().next().unwrap_or("")
+}
+
+/// A URL with its documents' facts and render, as `encoded_url` reads it.
+pub(crate) const SELECT_URL: &str = "SELECT u.id, u.url, u.status, u.location, u.content_type, u.ttfb_ms, u.size, u.error, u.headers,
+        u.depth, u.in_sitemap, u.blocked_by_robots, u.internal, fw.data, fr.data,
+        r.url_id, r.error, r.settled, r.console_errors, r.resources
+    FROM urls u
+    LEFT JOIN facts fw ON fw.url_id = u.id AND fw.source = 'raw'
+    LEFT JOIN facts fr ON fr.url_id = u.id AND fr.source = 'rendered'
+    LEFT JOIN renders r ON r.url_id = u.id";
+
+/// Text columns are taken out of the row, not copied: the checks and
+/// exports read every URL of a crawl through here.
+pub(crate) fn encoded_url(mut row: Row) -> Result<EncodedUrl> {
+    let headers = row.take_string(8)?;
+    Ok(EncodedUrl {
+        url: StoredUrl {
+            id: row.get(0)?,
+            http: HttpInfo {
+                url: row.take_string(1)?,
+                status: row.get(2)?,
+                location: row.take_text(3)?,
+                content_type: row.take_text(4)?,
+                ttfb_ms: row.get(5)?,
+                size: row.get(6)?,
+                error: row.take_text(7)?,
+                headers: serde_json::from_str(&headers).unwrap_or_default(),
+            },
+            internal: row.get(12)?,
+            depth: row.get(9)?,
+            in_sitemap: row.get(10)?,
+            blocked_by_robots: row.get(11)?,
+            raw: None,
+            rendered: None,
+            render: None,
+        },
+        raw: row.take_blob(13)?,
+        rendered: row.take_blob(14)?,
+        render: match row.get::<Option<i64>>(15)? {
+            Some(_) => Some((row.take_text(16)?, row.get(17)?, row.take_string(18)?, row.take_string(19)?)),
+            None => None,
+        },
+    })
 }
 
 /// One URL of a crawl with everything the cross-page checks and exports read.
@@ -281,369 +671,35 @@ pub enum Write {
     Issues { url_id: i64, issues: Vec<(&'static str, Option<String>)> },
 }
 
-impl Store {
-    pub fn open(path: &Path) -> Result<Self> {
-        let conn = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
-        conn.execute_batch(SCHEMA).context("create schema")?;
-        // Files from before `crawls.stopped`.
-        let stopped: i64 =
-            conn.query_row("SELECT count(*) FROM pragma_table_info('crawls') WHERE name = 'stopped'", [], |row| row.get(0))?;
-        if stopped == 0 {
-            conn.execute_batch("ALTER TABLE crawls ADD COLUMN stopped INTEGER NOT NULL DEFAULT 0;")?;
-        }
-        Ok(Store { conn })
-    }
-
-    /// Opens a crawl file for reading only, alongside a crawl writing to
-    /// it (WAL lets readers in while the writer commits).
-    pub fn open_read(path: &Path) -> Result<Self> {
-        let conn = Connection::open_with_flags(
-            path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )
-        .with_context(|| format!("open {} for reading", path.display()))?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        Ok(Store { conn })
-    }
-
-    pub fn start_crawl(&self, start_url: &str, config_json: &str) -> Result<i64> {
-        self.conn.execute(
-            "INSERT INTO crawls (start_url, config) VALUES (?1, ?2)",
-            params![start_url, config_json],
-        )?;
-        Ok(self.conn.last_insert_rowid())
-    }
-
-    /// Closes a crawl; `stopped` when it was asked to stop with URLs still
-    /// queued.
-    pub fn finish_crawl(&self, crawl_id: i64, stopped: bool) -> Result<()> {
-        self.conn.execute(
-            "UPDATE crawls SET finished_at = datetime('now'), stopped = ?2 WHERE id = ?1",
-            params![crawl_id, stopped],
-        )?;
-        Ok(())
-    }
-
-    /// Opens a closed or interrupted crawl again, to go on with it under
-    /// `config_json` (its settings, perhaps with a higher limit).
-    pub fn reopen_crawl(&self, crawl_id: i64, config_json: &str) -> Result<()> {
-        let changed = self.conn.execute(
-            "UPDATE crawls SET finished_at = NULL, stopped = 0, config = ?2 WHERE id = ?1",
-            params![crawl_id, config_json],
-        )?;
-        anyhow::ensure!(changed == 1, "no crawl {crawl_id}");
-        Ok(())
-    }
-
-    /// The URLs a crawl has written, in id order (which is the order it
-    /// found them), without their facts.
-    pub fn saved_urls(&self, crawl_id: i64) -> Result<Vec<SavedUrl>> {
-        let mut select = self.conn.prepare(
-            "SELECT id, url, internal, depth, status, content_type, error, blocked_by_robots
-             FROM urls WHERE crawl_id = ?1 ORDER BY id",
-        )?;
-        let urls = select
-            .query_map(params![crawl_id], |row| {
-                Ok(SavedUrl {
-                    id: row.get(0)?,
-                    url: row.get(1)?,
-                    internal: row.get(2)?,
-                    depth: row.get(3)?,
-                    status: row.get(4)?,
-                    content_type: row.get(5)?,
-                    error: row.get(6)?,
-                    blocked_by_robots: row.get(7)?,
-                })
-            })?
-            .collect::<rusqlite::Result<_>>()?;
-        Ok(urls)
-    }
-
-    /// Builds the indexes for per-URL link lookups, if missing.
-    pub fn ensure_read_indexes(&self) -> Result<()> {
-        self.conn.execute_batch(READ_INDEXES).context("create indexes")?;
-        Ok(())
-    }
-
-    /// The settings a crawl ran with, as JSON.
-    pub fn crawl_config(&self, crawl_id: i64) -> Result<String> {
-        Ok(self.conn.query_row("SELECT config FROM crawls WHERE id = ?1", params![crawl_id], |row| row.get(0))?)
-    }
-
-    /// The most recent crawl in the file.
-    pub fn last_crawl(&self) -> Result<Option<i64>> {
-        Ok(self
-            .conn
-            .query_row("SELECT max(id) FROM crawls", [], |row| row.get(0))
-            .optional()?
-            .flatten())
-    }
-
-    /// Turns off foreign key checks for this connection: the crawl's writer
-    /// only inserts rows whose references it made itself, and the lookups
-    /// cost a third of a link row's insert.
-    pub fn bulk_writes(&self) -> Result<()> {
-        self.conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
-        Ok(())
-    }
-
-    /// The first URL id no row uses yet; a crawl numbers its URLs from it.
-    pub fn next_url_id(&self) -> Result<i64> {
-        Ok(self.conn.query_row("SELECT coalesce(max(id), 0) + 1 FROM urls", [], |row| row.get(0))?)
-    }
-
-    /// Applies `writes` in one transaction.
-    pub fn apply(&mut self, crawl_id: i64, writes: &[Write]) -> Result<()> {
-        let tx = self.conn.transaction()?;
-        {
-            let mut response = tx.prepare_cached(
-                // A continued crawl requests again a page whose facts its first
-                // run never wrote, under the same id.
-                "INSERT OR REPLACE INTO urls (id, crawl_id, url, status, location, content_type, ttfb_ms, size, error, headers, internal, depth)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            )?;
-            let mut facts_row = tx.prepare_cached(
-                "INSERT OR REPLACE INTO facts
-                   (url_id, source, title, description, h1, canonical, robots, word_count, text_hash, links, data)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            )?;
-            let mut link_row = tx.prepare_cached(
-                "INSERT INTO links (crawl_id, from_url_id, source, to_url, anchor, rel, nofollow, position, image)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            )?;
-            let mut render_row = tx.prepare_cached(
-                "INSERT OR REPLACE INTO renders
-                   (url_id, final_url, error, dcl_ms, total_ms, settled, load_fired, console_errors, resources)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            )?;
-            let mut body_row = tx.prepare_cached(
-                "INSERT OR REPLACE INTO bodies (url_id, kind, encoding, size, data) VALUES (?1, ?2, ?3, ?4, ?5)",
-            )?;
-            let mut issue_row =
-                tx.prepare_cached("INSERT INTO issues (crawl_id, url_id, code, detail) VALUES (?1, ?2, ?3, ?4)")?;
-            for write in writes {
-                match write {
-                    Write::Response { id, http, internal, depth } => {
-                        response.execute(params![
-                            id,
-                            crawl_id,
-                            http.url,
-                            http.status,
-                            http.location,
-                            http.content_type,
-                            http.ttfb_ms,
-                            http.size as i64,
-                            http.error,
-                            serde_json::to_string(&http.headers)?,
-                            internal,
-                            depth,
-                        ])?;
-                    }
-                    Write::Facts { url_id, facts, data, links } => {
-                        let source = facts.source.as_str();
-                        facts_row.execute(params![
-                            url_id,
-                            source,
-                            facts.title(),
-                            facts.description(),
-                            facts.h1().next(),
-                            facts.canonicals.first(),
-                            (!facts.meta_robots.is_empty()).then(|| facts.meta_robots.join(", ")),
-                            facts.word_count as i64,
-                            format!("{:016x}", facts.text_hash),
-                            facts.links.len() as i64,
-                            data,
-                        ])?;
-                        if *links {
-                            for link in &facts.links {
-                                link_row.execute(params![
-                                    crawl_id,
-                                    url_id,
-                                    source,
-                                    link.href,
-                                    link.anchor,
-                                    link.rel.join(" "),
-                                    link.nofollow,
-                                    link.position.as_str(),
-                                    link.image,
-                                ])?;
-                            }
-                        }
-                    }
-                    Write::Render { url_id, render } => {
-                        render_row.execute(params![
-                            url_id,
-                            render.final_url,
-                            render.error,
-                            render.dcl_ms as i64,
-                            render.total_ms as i64,
-                            render.settled,
-                            render.load_fired,
-                            render.console_errors_json,
-                            render.resources_json,
-                        ])?;
-                    }
-                    Write::Body { url_id, kind, encoding, size, data } => {
-                        body_row.execute(params![url_id, kind.as_str(), encoding, *size as i64, data])?;
-                    }
-                    Write::Issues { url_id, issues } => {
-                        for (code, detail) in issues {
-                            issue_row.execute(params![crawl_id, url_id, code, detail])?;
-                        }
-                    }
-                }
-            }
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// A stored document as written, with its encoding.
-    pub fn body(&self, url_id: i64, kind: BodyKind) -> Result<Option<(String, Vec<u8>)>> {
-        Ok(self
-            .conn
-            .query_row(
-                "SELECT encoding, data FROM bodies WHERE url_id = ?1 AND kind = ?2",
-                params![url_id, kind.as_str()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?)
-    }
-
-    /// Sets (url id, click depth, listed in a sitemap, blocked by robots.txt)
-    /// for each URL.
-    pub fn set_crawl_states(&mut self, states: &[(i64, Option<u32>, bool, bool)]) -> Result<()> {
-        let tx = self.conn.transaction()?;
-        {
-            let mut update = tx.prepare_cached(
-                "UPDATE urls SET depth = ?2, in_sitemap = ?3, blocked_by_robots = ?4 WHERE id = ?1",
-            )?;
-            for (url_id, depth, in_sitemap, blocked) in states {
-                update.execute(params![url_id, depth, in_sitemap, blocked])?;
-            }
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// Replaces the crawl's issues.
-    pub fn save_issues(&mut self, crawl_id: i64, issues: &[(i64, &str, Option<String>)]) -> Result<()> {
-        let tx = self.conn.transaction()?;
-        tx.execute("DELETE FROM issues WHERE crawl_id = ?1", params![crawl_id])?;
-        {
-            let mut insert = tx.prepare_cached(
-                "INSERT INTO issues (crawl_id, url_id, code, detail) VALUES (?1, ?2, ?3, ?4)",
-            )?;
-            for (url_id, code, detail) in issues {
-                insert.execute(params![crawl_id, url_id, code, detail])?;
-            }
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// Every URL of a crawl with its facts, in insertion order.
-    pub fn urls(&self, crawl_id: i64) -> Result<Vec<StoredUrl>> {
-        let mut urls = Vec::new();
-        self.for_each_url_chunk(crawl_id, 4096, |chunk| {
-            for encoded in chunk {
-                urls.push(encoded.decode()?);
-            }
-            Ok(())
-        })?;
-        Ok(urls)
-    }
-
-    /// Every URL of a crawl in id order, `chunk` at a time, with its facts
-    /// still encoded: a reader decodes them where it likes (in parallel) and
-    /// never holds more than a chunk of them.
-    pub fn for_each_url_chunk(
-        &self,
-        crawl_id: i64,
-        chunk: usize,
-        mut each: impl FnMut(Vec<EncodedUrl>) -> Result<()>,
-    ) -> Result<()> {
-        let mut select = self.conn.prepare(&format!("{SELECT_URL} WHERE u.crawl_id = ?1 ORDER BY u.id"))?;
-        let mut rows = select.query(params![crawl_id])?;
-        let mut batch = Vec::with_capacity(chunk);
-        while let Some(row) = rows.next()? {
-            batch.push(encoded_url(row)?);
-            if batch.len() >= chunk {
-                each(std::mem::replace(&mut batch, Vec::with_capacity(chunk)))?;
-            }
-        }
-        if !batch.is_empty() {
-            each(batch)?;
-        }
-        Ok(())
-    }
-
-    /// One URL with its facts decoded.
-    pub fn url(&self, id: i64) -> Result<Option<StoredUrl>> {
-        let mut select = self.conn.prepare_cached(&format!("{SELECT_URL} WHERE u.id = ?1"))?;
-        let mut rows = select.query(params![id])?;
-        rows.next()?.map(|row| encoded_url(row)?.decode()).transpose()
-    }
-
-    /// Raw access for exports and ad-hoc queries.
-    pub fn connection(&self) -> &Connection {
-        &self.conn
-    }
-}
-
-/// A URL with its documents' facts and render, as `encoded_url` reads it.
-pub(crate) const SELECT_URL: &str = "SELECT u.id, u.url, u.status, u.location, u.content_type, u.ttfb_ms, u.size, u.error, u.headers,
-        u.depth, u.in_sitemap, u.blocked_by_robots, u.internal, fw.data, fr.data,
-        r.url_id, r.error, r.settled, r.console_errors, r.resources
-    FROM urls u
-    LEFT JOIN facts fw ON fw.url_id = u.id AND fw.source = 'raw'
-    LEFT JOIN facts fr ON fr.url_id = u.id AND fr.source = 'rendered'
-    LEFT JOIN renders r ON r.url_id = u.id";
-
-pub(crate) fn encoded_url(row: &rusqlite::Row<'_>) -> Result<EncodedUrl> {
-    let headers: String = row.get(8)?;
-    Ok(EncodedUrl {
-        url: StoredUrl {
-            id: row.get(0)?,
-            http: HttpInfo {
-                url: row.get(1)?,
-                status: row.get(2)?,
-                location: row.get(3)?,
-                content_type: row.get(4)?,
-                ttfb_ms: row.get(5)?,
-                size: row.get::<_, i64>(6)? as u64,
-                error: row.get(7)?,
-                headers: serde_json::from_str(&headers).unwrap_or_default(),
-            },
-            internal: row.get(12)?,
-            depth: row.get(9)?,
-            in_sitemap: row.get(10)?,
-            blocked_by_robots: row.get(11)?,
-            raw: None,
-            rendered: None,
-            render: None,
-        },
-        raw: row.get(13)?,
-        rendered: row.get(14)?,
-        render: match row.get::<_, Option<i64>>(15)? {
-            Some(_) => Some((row.get(16)?, row.get(17)?, row.get(18)?, row.get(19)?)),
-            None => None,
-        },
-    })
-}
-
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use seo_page::Source;
 
-    #[test]
-    fn round_trips_a_page() {
-        let dir = std::env::temp_dir().join(format!("seo-store-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("t.sqlite");
-        let _ = std::fs::remove_file(&path);
-        let mut store = Store::open(&path).unwrap();
+    /// Database servers to run the store's tests on besides SQLite, from
+    /// `SEO_SPIDER_TEST_POSTGRES` and `SEO_SPIDER_TEST_MYSQL` (addresses of
+    /// databases the tests may empty).
+    pub(crate) fn servers() -> Vec<String> {
+        ["SEO_SPIDER_TEST_POSTGRES", "SEO_SPIDER_TEST_MYSQL"].iter().filter_map(|name| std::env::var(name).ok()).collect()
+    }
+
+    /// The servers' tests share their databases: one at a time.
+    pub(crate) static SERVER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// An empty store at `target`: a fresh file, or a server database with
+    /// the tables dropped.
+    pub(crate) fn empty(target: &str) -> Store {
+        if is_server(OsStr::new(target)) {
+            let store = Store::open_read(target).unwrap();
+            store.execute("DROP TABLE IF EXISTS crawls, urls, facts, links, renders, bodies, issues", &[]).unwrap();
+        } else {
+            let _ = std::fs::remove_file(target);
+        }
+        Store::open(target).unwrap()
+    }
+
+    fn round_trip(target: &str) {
+        let mut store = empty(target);
         let crawl = store.start_crawl("https://example.com/", "{}").unwrap();
         let http = HttpInfo {
             url: "https://example.com/".into(),
@@ -653,14 +709,16 @@ mod tests {
             ..Default::default()
         };
         let id = store.next_url_id().unwrap();
-        let facts = seo_page::extract(
+        let mut facts = seo_page::extract(
             "<title>T</title><a href='/b'>b</a>",
             &url::Url::parse("https://example.com/").unwrap(),
             Source::Raw,
         );
+        // A NUL in a title: PostgreSQL text cannot hold it.
+        facts.titles = vec!["T\u{0} ёж".into()];
         let data = encode_facts(&facts, 3).unwrap();
         assert!(data.starts_with(&ZSTD_MAGIC));
-        assert_eq!(decode_facts(&serde_json::to_vec(&facts).unwrap()).unwrap().title(), Some("T"));
+        assert_eq!(decode_facts(&serde_json::to_vec(&facts).unwrap()).unwrap().title(), Some("T\u{0} ёж"));
         store
             .apply(
                 crawl,
@@ -668,6 +726,7 @@ mod tests {
                     Write::Response { id, http, internal: true, depth: Some(0) },
                     Write::Facts { url_id: id, facts: Box::new(facts), data, links: true },
                     Write::Body { url_id: id, kind: BodyKind::Raw, encoding: "identity", size: 2, data: b"ok".to_vec() },
+                    Write::Issues { url_id: id, issues: vec![("title_missing", Some("x".into()))] },
                 ],
             )
             .unwrap();
@@ -678,12 +737,53 @@ mod tests {
         let urls = store.urls(crawl).unwrap();
         assert_eq!(urls.len(), 1);
         assert_eq!(urls[0].http.header("X-Robots-Tag"), Some("noindex"));
-        assert_eq!(urls[0].raw.as_ref().unwrap().title(), Some("T"));
-        assert_eq!(urls[0].depth, Some(0));
-        let links: i64 = store
-            .connection()
-            .query_row("SELECT count(*) FROM links", [], |row| row.get(0))
-            .unwrap();
+        assert_eq!(urls[0].raw.as_ref().unwrap().title(), Some("T\u{0} ёж"));
+        let title: String = store.query_row("SELECT title FROM facts", &[]).unwrap().unwrap().get(0).unwrap();
+        assert!(title.ends_with(" ёж"), "{title:?}");
+        assert_eq!((urls[0].depth, urls[0].in_sitemap), (Some(0), true));
+        let links: i64 = store.query_row("SELECT count(*) FROM links", &[]).unwrap().unwrap().get(0).unwrap();
         assert_eq!(links, 1);
+        let issues: Vec<String> =
+            store.query_rows("SELECT code FROM issues", &[]).unwrap().iter().map(|row| row.get(0).unwrap()).collect();
+        assert_eq!(issues, ["title_too_short"]);
+        store.finish_crawl(crawl, true).unwrap();
+        assert!(store.crawls().unwrap()[0].stopped);
+        store.reopen_crawl(crawl, "{\"a\":1}").unwrap();
+        assert_eq!(store.crawl_config(crawl).unwrap(), "{\"a\":1}");
+        assert!(store.crawls().unwrap()[0].finished_at.is_none());
+        assert_eq!(store.saved_urls(crawl).unwrap()[0].url, "https://example.com/");
+        store.ensure_read_indexes().unwrap();
+        store.ensure_read_indexes().unwrap();
+        store.delete_urls(&[id]).unwrap();
+        assert!(store.url(id).unwrap().is_none());
+        assert_eq!(store.last_crawl().unwrap(), Some(crawl));
+    }
+
+    #[test]
+    fn round_trips_a_page() {
+        let path = std::env::temp_dir().join(format!("seo-store-{}.sqlite", std::process::id()));
+        round_trip(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn round_trips_a_page_on_servers() {
+        let _one = SERVER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        for target in servers() {
+            round_trip(&target);
+        }
+    }
+
+    #[test]
+    fn dates_are_civil() {
+        let date = now();
+        assert_eq!(date.len(), 19);
+        assert!(date.starts_with("20"));
+    }
+
+    #[test]
+    fn hides_passwords() {
+        assert_eq!(describe(OsStr::new("postgres://seo:secret@db:5432/seo")), "postgres://seo:***@db:5432/seo");
+        assert_eq!(describe(OsStr::new("crawl.sqlite")), "crawl.sqlite");
     }
 }

@@ -70,6 +70,14 @@ csv = "1"
 axum = "0.8"
 tower-http = { version = "0.6", features = ["fs"] }
 futures-util = "0.3"
+# Database servers for crawls: PostgreSQL and MySQL, TLS on ring like reqwest.
+tokio-postgres = "0.7"
+tokio-postgres-rustls = { version = "0.14", default-features = false, features = ["ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+webpki-roots = "1"
+futures-executor = "0.3"
+bytes = "1"
+mysql = { version = "28", default-features = false, features = ["minimal-rust", "buffer-pool", "rustls-tls-ring"] }
 rust-embed = "8"
 mime_guess = "2"
 

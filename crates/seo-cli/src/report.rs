@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use rusqlite::params;
+use seo_store::params;
 use seo_store::{Store, StoredUrl};
 
 fn percentile(sorted: &[i64], p: f64) -> i64 {
@@ -33,17 +33,16 @@ pub fn report(store: &Store, crawl_id: i64) -> Result<()> {
     let pages = urls.iter().filter(|url| url.raw.is_some()).count();
     println!("pages read: {pages}");
 
-    let conn = store.connection();
-    let mut select = conn.prepare(
-        "SELECT r.dcl_ms, r.total_ms, r.settled, r.load_fired, r.error, r.console_errors, r.resources
-         FROM renders r JOIN urls u ON u.id = r.url_id WHERE u.crawl_id = ?1",
-    )?;
     type Row = (i64, i64, bool, bool, Option<String>, String, String);
-    let rows: Vec<Row> = select
-        .query_map(params![crawl_id], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?))
-        })?
-        .collect::<rusqlite::Result<_>>()?;
+    let rows: Vec<Row> = store
+        .query_rows(
+            "SELECT r.dcl_ms, r.total_ms, r.settled, r.load_fired, r.error, r.console_errors, r.resources
+             FROM renders r JOIN urls u ON u.id = r.url_id WHERE u.crawl_id = ?1",
+            &params![crawl_id],
+        )?
+        .iter()
+        .map(|row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)))
+        .collect::<Result<_>>()?;
     if rows.is_empty() {
         return Ok(());
     }

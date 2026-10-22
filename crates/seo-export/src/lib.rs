@@ -8,10 +8,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use rayon::prelude::*;
-use rusqlite::params;
 use rustc_hash::FxHashMap;
 use seo_page::{HttpInfo, PageFacts};
-use seo_store::{Store, StoredUrl};
+use seo_store::{params, Store, StoredUrl};
 
 pub enum Cell {
     Text(String),
@@ -277,24 +276,24 @@ fn external(store: &Store, crawl_id: i64, inlinks: &FxHashMap<String, (i64, i64)
         "external",
         &["Address", "Content Type", "Status Code", "Status", "Redirect URL", "Response Time (ms)", "Inlinks"],
     )?;
-    let mut select = store.connection().prepare(
+    store.query(
         "SELECT url, content_type, status, error, location, ttfb_ms FROM urls
          WHERE crawl_id = ?1 AND internal = 0 ORDER BY id",
+        &params![crawl_id],
+        |row| {
+            let url: String = row.get(0)?;
+            let unique_in = inlinks.get(&url).map_or(0, |counts| counts.1);
+            sink.row(&[
+                url.into(),
+                row.get::<Option<String>>(1)?.into(),
+                Cell::Int(row.get(2)?),
+                row.get::<Option<String>>(3)?.into(),
+                row.get::<Option<String>>(4)?.into(),
+                Cell::Int(row.get(5)?),
+                unique_in.into(),
+            ])
+        },
     )?;
-    let mut rows = select.query(params![crawl_id])?;
-    while let Some(row) = rows.next()? {
-        let url: String = row.get(0)?;
-        let unique_in = inlinks.get(&url).map_or(0, |counts| counts.1);
-        sink.row(&[
-            url.into(),
-            row.get::<_, Option<String>>(1)?.into(),
-            Cell::Int(row.get(2)?),
-            row.get::<_, Option<String>>(3)?.into(),
-            row.get::<_, Option<String>>(4)?.into(),
-            Cell::Int(row.get(5)?),
-            unique_in.into(),
-        ])?;
-    }
     sink.end()
 }
 
@@ -303,12 +302,11 @@ fn external(store: &Store, crawl_id: i64, inlinks: &FxHashMap<String, (i64, i64)
 fn redirects(store: &Store, crawl_id: i64, sink: &mut dyn Sink) -> Result<usize> {
     sink.begin("redirects", &["Address", "Hops", "Final Address", "Final Status Code", "Loop", "Chain"])?;
     // (url, status, redirect target) of every URL: small, unlike facts.
-    let mut select = store
-        .connection()
-        .prepare("SELECT url, status, location FROM urls WHERE crawl_id = ?1 ORDER BY id")?;
-    let urls: Vec<(String, u16, Option<String>)> = select
-        .query_map(params![crawl_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
-        .collect::<rusqlite::Result<_>>()?;
+    let urls: Vec<(String, u16, Option<String>)> = store
+        .query_rows("SELECT url, status, location FROM urls WHERE crawl_id = ?1 ORDER BY id", &params![crawl_id])?
+        .iter()
+        .map(|row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .collect::<Result<_>>()?;
     let redirect = |status: u16, location: &Option<String>| (300..400).contains(&status) && location.is_some();
     let by_url: HashMap<&str, (u16, Option<&str>)> = urls
         .iter()
@@ -387,12 +385,14 @@ fn javascript(store: &Store, crawl_id: i64, sink: &mut dyn Sink) -> Result<usize
             "Links Raw", "Links Rendered", "Links Only In Rendered",
         ],
     )?;
-    let mut select = store.connection().prepare(
-        "SELECT r.url_id, r.error, r.settled, r.total_ms, r.console_errors, r.resources
-         FROM renders r JOIN urls u ON u.id = r.url_id WHERE u.crawl_id = ?1",
-    )?;
-    let renders: HashMap<i64, RenderInfo> = select
-        .query_map(params![crawl_id], |row| {
+    let renders: HashMap<i64, RenderInfo> = store
+        .query_rows(
+            "SELECT r.url_id, r.error, r.settled, r.total_ms, r.console_errors, r.resources
+             FROM renders r JOIN urls u ON u.id = r.url_id WHERE u.crawl_id = ?1",
+            &params![crawl_id],
+        )?
+        .iter()
+        .map(|row| {
             let console: String = row.get(4)?;
             let resources: String = row.get(5)?;
             Ok((
@@ -410,8 +410,8 @@ fn javascript(store: &Store, crawl_id: i64, sink: &mut dyn Sink) -> Result<usize
                     }),
                 },
             ))
-        })?
-        .collect::<rusqlite::Result<_>>()?;
+        })
+        .collect::<Result<_>>()?;
     if renders.is_empty() {
         return sink.end();
     }
@@ -564,10 +564,10 @@ fn custom(store: &Store, crawl_id: i64, sink: &mut dyn Sink) -> Result<usize> {
 fn links(store: &Store, crawl_id: i64, sink: &mut dyn Sink) -> Result<usize> {
     sink.begin("links", &["From", "To", "To Status Code", "Anchor", "Rel", "Nofollow", "Position", "Image", "Document"])?;
     let statuses: FxHashMap<String, i64> = store
-        .connection()
-        .prepare("SELECT url, status FROM urls WHERE crawl_id = ?1")?
-        .query_map(params![crawl_id], |row| Ok((row.get(0)?, row.get(1)?)))?
-        .collect::<rusqlite::Result<_>>()?;
+        .query_rows("SELECT url, status FROM urls WHERE crawl_id = ?1", &params![crawl_id])?
+        .iter()
+        .map(|row| Ok((row.get(0)?, row.get(1)?)))
+        .collect::<Result<_>>()?;
     url_row_groups(store, crawl_id, sink, |url| {
         let Some(facts) = url.facts() else { return Vec::new() };
         facts
@@ -593,15 +593,15 @@ fn links(store: &Store, crawl_id: i64, sink: &mut dyn Sink) -> Result<usize> {
 
 fn issues(store: &Store, crawl_id: i64, sink: &mut dyn Sink) -> Result<usize> {
     sink.begin("issues", &["Address", "Severity", "Category", "Issue", "Code", "Detail"])?;
-    let mut select = store.connection().prepare(
-        "SELECT u.url, i.code, i.detail FROM issues i JOIN urls u ON u.id = i.url_id
-         WHERE i.crawl_id = ?1 ORDER BY u.id",
-    )?;
-    let mut rows = select
-        .query_map(params![crawl_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut rows = store
+        .query_rows(
+            "SELECT u.url, i.code, i.detail FROM issues i JOIN urls u ON u.id = i.url_id
+             WHERE i.crawl_id = ?1 ORDER BY u.id",
+            &params![crawl_id],
+        )?
+        .iter()
+        .map(|row| Ok((row.get::<String>(0)?, row.get::<String>(1)?, row.get::<Option<String>>(2)?)))
+        .collect::<Result<Vec<_>>>()?;
     let rank = |code: &str| seo_checks::find(code).map(|check| (check.severity, check.category));
     rows.sort_by(|a, b| rank(&a.1).cmp(&rank(&b.1)).then_with(|| a.1.cmp(&b.1)));
     for (url, code, detail) in rows {
@@ -621,12 +621,11 @@ fn issues(store: &Store, crawl_id: i64, sink: &mut dyn Sink) -> Result<usize> {
 /// How many pages each check flagged, most severe first.
 fn summary(store: &Store, crawl_id: i64, sink: &mut dyn Sink) -> Result<usize> {
     sink.begin("summary", &["Severity", "Category", "Issue", "Code", "URLs", "Description"])?;
-    let mut select = store
-        .connection()
-        .prepare("SELECT code, count(DISTINCT url_id) FROM issues WHERE crawl_id = ?1 GROUP BY code")?;
-    let counts: HashMap<String, i64> = select
-        .query_map(params![crawl_id], |row| Ok((row.get(0)?, row.get(1)?)))?
-        .collect::<rusqlite::Result<_>>()?;
+    let counts: HashMap<String, i64> = store
+        .query_rows("SELECT code, count(DISTINCT url_id) FROM issues WHERE crawl_id = ?1 GROUP BY code", &params![crawl_id])?
+        .iter()
+        .map(|row| Ok((row.get(0)?, row.get(1)?)))
+        .collect::<Result<_>>()?;
     let mut checks: Vec<_> = seo_checks::CATALOG.iter().filter(|check| counts.contains_key(check.code)).collect();
     checks.sort_by_key(|check| (check.severity, check.category, std::cmp::Reverse(counts[check.code])));
     for check in checks {

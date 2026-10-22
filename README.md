@@ -165,6 +165,39 @@ Export tabs: `summary`, `internal`, `external`, `redirects`, `javascript`
 (raw HTML against the rendered DOM), `structured_data`, `custom`, `links`,
 `issues`.
 
+## Databases
+
+A crawl goes into a SQLite file by default. `--db` also takes a PostgreSQL
+or MySQL database, for every command and the UI:
+
+```
+export SEO_SPIDER_DB_PASSWORD=...          # or PGPASSWORD / MYSQL_PWD, or in the address
+seo-spider crawl https://example.com/ --db postgres://seo@db.example/seo
+seo-spider ui --db mysql://seo@db.example/seo
+```
+
+The tables are made on first use (PostgreSQL 12+, MySQL 8.0+), and one
+database holds any number of crawls, as a file does. PostgreSQL connects
+with TLS when the server offers it (`?sslmode=require` insists); MySQL
+with `?sslmode=require`, checked against the web's roots (a server with
+its own CA: `&root_cert_path=ca.pem`). The password is never printed:
+output and logs show the address with `***`.
+
+The store writes in bulk however the database takes it fastest:
+`COPY ... BINARY` into PostgreSQL, multi-row prepared INSERTs into MySQL,
+prepared inserts in one transaction into SQLite. The bench site, 100,000
+pages (210,000 URLs), crawl and checks:
+
+| store | crawl | checks | all | peak memory |
+|---|---|---|---|---|
+| SQLite | 6.2 s | 6.0 s | 12.4 s | 0.8 GB |
+| PostgreSQL 17 | 9.5 s | 7.0 s | 16.7 s | 0.5 GB |
+| MySQL 8.4 | 17.5 s | 12.4 s | 30.3 s | 0.6 GB |
+
+(Servers in Docker on the same machine, default settings; MySQL with the
+binary log off and a 2 GB buffer pool gains about a tenth.) The same site
+crawled into all three exports the same rows.
+
 ## Continuing a crawl
 
 ```
