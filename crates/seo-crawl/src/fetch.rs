@@ -15,6 +15,8 @@ pub struct ClientOptions<'a> {
     pub headers: &'a std::collections::BTreeMap<String, String>,
     /// Keep the cookies responses set, for the crawl's length.
     pub cookies: bool,
+    /// Offer HTTP/2 (negotiated by ALPN) instead of HTTP/1.1 only.
+    pub http2: bool,
 }
 
 pub fn client(options: &ClientOptions<'_>) -> anyhow::Result<Client> {
@@ -33,12 +35,13 @@ pub fn client(options: &ClientOptions<'_>) -> anyhow::Result<Client> {
             reqwest::header::HeaderValue::from_str(value)?,
         );
     }
-    Ok(Client::builder()
-        // Over HTTP/2 a status check drops its response unread, and further
-        // streams on the same connection then stall until the timeout (seen
-        // on Cloudflare hosts; obscura-net hit the same and defaults to
-        // HTTP/1.1 for it). One request per connection keeps them apart.
-        .http1_only()
+    let builder = Client::builder();
+    // Over HTTP/2 a status check drops its response unread, and further
+    // streams on the same connection then stall until the timeout (seen on
+    // Cloudflare hosts; obscura-net hit the same and defaults to HTTP/1.1
+    // for it). One request per connection keeps them apart.
+    let builder = if options.http2 { builder } else { builder.http1_only() };
+    Ok(builder
         .redirect(reqwest::redirect::Policy::none())
         .user_agent(options.user_agent)
         .default_headers(headers)

@@ -129,6 +129,7 @@ impl CrawlConfig {
         match name {
             "minimal" => {
                 config.fetch = FetchLevel::Head;
+                config.http.http2 = true;
                 config.follow_links = false;
                 config.use_sitemaps = true;
                 config.check_external = false;
@@ -194,6 +195,13 @@ pub struct HttpConfig {
     pub cookies: bool,
     /// Check resources and external links with HEAD (GET when refused).
     pub head_for_status: bool,
+    /// Offer HTTP/2 to servers. A `fetch = "head"` crawl gains most: over
+    /// HTTP/1.1 each read cut at `</head>` costs the connection (vuejs.org:
+    /// 4.5 s -> 1.7 s). Off by default: a whole-document crawl checks
+    /// resources too, and some servers then stall the connection's other
+    /// streams after a response is dropped unread (the same site: 2.4 s ->
+    /// 21 s).
+    pub http2: bool,
 }
 
 impl Default for HttpConfig {
@@ -214,6 +222,7 @@ impl Default for HttpConfig {
             headers: BTreeMap::new(),
             cookies: true,
             head_for_status: true,
+            http2: false,
         }
     }
 }

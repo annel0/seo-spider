@@ -140,6 +140,9 @@ struct CrawlArgs {
     /// External URLs checked at once, over all hosts.
     #[arg(long)]
     external_concurrency: Option<usize>,
+    /// Offer HTTP/2 to servers (HTTP/1.1 only by default).
+    #[arg(long)]
+    http2: bool,
     /// Upper bound on requests per second to the site.
     #[arg(long)]
     max_rps: Option<f64>,
@@ -398,6 +401,7 @@ fn crawl_config(args: &CrawlArgs) -> Result<CrawlConfig> {
     if let Some(concurrency) = args.external_concurrency {
         config.http.external_concurrency = concurrency;
     }
+    config.http.http2 |= args.http2;
     if args.max_rps.is_some() {
         config.http.max_rps = args.max_rps;
     }

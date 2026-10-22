@@ -103,6 +103,7 @@ pub async fn crawl_with(
         concurrency: config.http.concurrency,
         headers: &config.http.headers,
         cookies: config.http.cookies,
+        http2: config.http.http2,
     })?;
     let crawl_id = store.start_crawl(config.start_urls[0].as_str(), &serde_json::to_string(&config)?)?;
     let base_id = store.next_url_id()?;
