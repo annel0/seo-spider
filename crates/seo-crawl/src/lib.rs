@@ -152,6 +152,7 @@ pub async fn crawl_with(
             from_rps.into_iter().chain(from_robots).max().map(Pacer::new)
         },
         head_for_status: config.http.head_for_status,
+        stop: stop.clone(),
         retries: config.http.retries,
         body: match config.fetch {
             FetchLevel::Status => fetch::BodyMode::None,
@@ -317,6 +318,9 @@ pub async fn crawl_with(
             } else {
                 external_in_flight -= 1;
             }
+            if outcome.unsent {
+                continue;
+            }
             let discovered = Instant::now();
             for candidate in std::mem::take(&mut outcome.candidates) {
                 frontier.push(
@@ -425,6 +429,9 @@ struct Ctx {
     pacer: Option<Pacer>,
     head_for_status: bool,
     body: fetch::BodyMode,
+    /// Set once the crawl is to stop: requests still waiting their turn
+    /// are not sent.
+    stop: Arc<AtomicBool>,
     /// Extra attempts for a request that failed in a way worth retrying.
     retries: u32,
     /// What is read from the raw document: everything asked for when it is
@@ -529,14 +536,30 @@ impl Pacer {
         Pacer { interval, next: std::sync::Mutex::new(tokio::time::Instant::now()) }
     }
 
-    async fn pace(&self) {
+    /// Waits for this request's turn; false if the crawl stops first, which
+    /// behind a Crawl-delay of 10 s can be minutes away.
+    async fn pace(&self, stop: &AtomicBool) -> bool {
         let at = {
             let mut next = self.next.lock().expect("pacer lock");
             let at = (*next).max(tokio::time::Instant::now());
             *next = at + self.interval;
             at
         };
-        tokio::time::sleep_until(at).await;
+        sleep_unless_stopped(stop, at).await
+    }
+}
+
+/// Sleeps until `until`, looking at `stop` every 100 ms; false if it was set.
+async fn sleep_unless_stopped(stop: &AtomicBool, until: tokio::time::Instant) -> bool {
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            return false;
+        }
+        let now = tokio::time::Instant::now();
+        if now >= until {
+            return true;
+        }
+        tokio::time::sleep_until(until.min(now + Duration::from_millis(100))).await;
     }
 }
 
@@ -568,6 +591,24 @@ struct Outcome {
     rendered: Option<RenderedPage>,
     /// URLs to queue, prepared on the worker.
     candidates: Vec<Candidate>,
+    /// The crawl stopped before the request was sent: the URL stays
+    /// unrequested, as the queued ones do.
+    unsent: bool,
+}
+
+impl Outcome {
+    fn unsent(item: Item) -> Self {
+        Outcome {
+            http: HttpInfo { url: item.url.to_string(), ..Default::default() },
+            item,
+            bytes_read: 0,
+            raw: None,
+            raw_body: None,
+            rendered: None,
+            candidates: Vec::new(),
+            unsent: true,
+        }
+    }
 }
 
 struct RenderedPage {
@@ -601,7 +642,9 @@ fn document(facts: PageFacts, level: i32) -> Document {
 async fn process(ctx: Arc<Ctx>, item: Item) -> Outcome {
     let (http, body) = if item.internal {
         let _slot = ctx.http_slots.acquire().await.expect("HTTP slots are never closed");
-        let fetched = fetch_retrying(&ctx, &item, ctx.body, None).await;
+        let Some(fetched) = fetch_retrying(&ctx, &item, ctx.body, None).await else {
+            return Outcome::unsent(item);
+        };
         (fetched.http, fetched.body)
     } else {
         let host = item.url.origin().ascii_serialization();
@@ -620,8 +663,11 @@ async fn process(ctx: Arc<Ctx>, item: Item) -> Outcome {
                 match ctx.external_hosts.unreachable(&host) {
                     Some(error) => (skipped(error), None),
                     None => {
-                        let fetched =
-                            fetch_retrying(&ctx, &item, fetch::BodyMode::None, Some(ctx.external_timeout)).await;
+                        let Some(fetched) =
+                            fetch_retrying(&ctx, &item, fetch::BodyMode::None, Some(ctx.external_timeout)).await
+                        else {
+                            return Outcome::unsent(item);
+                        };
                         if fetched.unreachable {
                             let error = fetched.http.error.as_deref().unwrap_or("no connection");
                             ctx.external_hosts.mark_unreachable(&host, error);
@@ -667,7 +713,7 @@ async fn process(ctx: Arc<Ctx>, item: Item) -> Outcome {
         Some(pool) if renderable => Some(render_page(pool, &item.url, downloaded, &ctx).await),
         _ => None,
     };
-    let mut outcome = Outcome { item, http, bytes_read, raw, raw_body, rendered, candidates: Vec::new() };
+    let mut outcome = Outcome { item, http, bytes_read, raw, raw_body, rendered, candidates: Vec::new(), unsent: false };
     outcome.candidates = discover(&outcome, &ctx.rules);
     outcome
 }
@@ -713,16 +759,27 @@ fn ca_bundle(paths: &[std::path::PathBuf]) -> anyhow::Result<Option<std::path::P
     }
 }
 
-/// Requests the item, again while the failure is one worth retrying.
-async fn fetch_retrying(ctx: &Ctx, item: &Item, mode: fetch::BodyMode, timeout: Option<Duration>) -> fetch::Fetched {
+/// Requests the item, again while the failure is one worth retrying; `None`
+/// when the crawl stopped before the request was sent.
+async fn fetch_retrying(
+    ctx: &Ctx,
+    item: &Item,
+    mode: fetch::BodyMode,
+    timeout: Option<Duration>,
+) -> Option<fetch::Fetched> {
     // External URLs are only retried after a network failure: a third
     // party answering 5xx is the answer worth reporting.
     let retries = if item.internal { ctx.retries } else { ctx.retries.min(1) };
     let mut attempt = 0;
     loop {
+        if ctx.stop.load(Ordering::Relaxed) {
+            return None;
+        }
         if item.internal {
             if let Some(pacer) = &ctx.pacer {
-                pacer.pace().await;
+                if !pacer.pace(&ctx.stop).await {
+                    return None;
+                }
             }
         }
         let client = if item.internal { &ctx.client } else { &ctx.external_client };
@@ -731,9 +788,11 @@ async fn fetch_retrying(ctx: &Ctx, item: &Item, mode: fetch::BodyMode, timeout: 
             Some(delay) if attempt < retries => {
                 tracing::debug!(url = %item.url, attempt, status = fetched.http.status, "retrying");
                 attempt += 1;
-                tokio::time::sleep(delay).await;
+                if !sleep_unless_stopped(&ctx.stop, tokio::time::Instant::now() + delay).await {
+                    return Some(fetched);
+                }
             }
-            _ => return fetched,
+            _ => return Some(fetched),
         }
     }
 }
@@ -755,10 +814,15 @@ async fn render_page(
             break rendered;
         }
         tracing::debug!(url = %url, attempt, "retrying render");
-        tokio::time::sleep(Duration::from_millis(500 << attempt.min(5))).await;
+        let backoff = tokio::time::Instant::now() + Duration::from_millis(500 << attempt.min(5));
+        if !sleep_unless_stopped(&ctx.stop, backoff).await {
+            break rendered;
+        }
         attempt += 1;
         if let Some(pacer) = &ctx.pacer {
-            pacer.pace().await;
+            if !pacer.pace(&ctx.stop).await {
+                break rendered;
+            }
         }
     };
     let Rendered { final_url, error, html, dcl_ms, total_ms, settled, load_fired, resources, console_errors, .. } =

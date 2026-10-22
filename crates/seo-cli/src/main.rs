@@ -509,22 +509,28 @@ fn crawl(args: CrawlArgs) -> Result<()> {
         let stop = stop.clone();
         async move {
             #[cfg(unix)]
-            let terminate = async {
-                match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-                    Ok(mut signal) => signal.recv().await,
-                    Err(_) => std::future::pending().await,
+            let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
+            // The first signal stops the crawl, the second quits at once.
+            for signals in 0.. {
+                #[cfg(unix)]
+                let terminated = async {
+                    match terminate.as_mut() {
+                        Some(signal) => signal.recv().await,
+                        None => std::future::pending().await,
+                    }
+                };
+                #[cfg(not(unix))]
+                let terminated = std::future::pending::<Option<()>>();
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = terminated => {}
                 }
-            };
-            #[cfg(not(unix))]
-            let terminate = std::future::pending::<Option<()>>();
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => {}
-                _ = terminate => {}
+                if signals > 0 {
+                    std::process::exit(130);
+                }
+                eprintln!("stopping: finishing the requests in flight (Ctrl-C again to quit now)");
+                stop.store(true, std::sync::atomic::Ordering::Relaxed);
             }
-            eprintln!("stopping: finishing the requests in flight (Ctrl-C again to quit now)");
-            stop.store(true, std::sync::atomic::Ordering::Relaxed);
-            let _ = tokio::signal::ctrl_c().await;
-            std::process::exit(130);
         }
     });
     // On a terminal, a progress line once a second.
