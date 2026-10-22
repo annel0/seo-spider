@@ -64,7 +64,11 @@ read. Checks whose input was not extracted report nothing.
 Speed and politeness: `--concurrency` (the site), `--external-concurrency`
 (other hosts, at most 4 per host; a host that does not connect is not asked
 again), `--max-rps`, robots.txt `Crawl-delay`, `--retries`, `--http2`
-(on in the `minimal` preset, where it is several times faster). Rendering:
+(on in the `minimal` preset, where it is several times faster). TLS:
+`--ca-cert file.pem` trusts more root certificates (sites on the Russian
+Trusted Root CA, such as tbank.ru, fail with UnknownIssuer otherwise),
+`--insecure` accepts any certificate; both apply to the crawler's requests,
+not yet to rendering. Rendering:
 `--render-threads`, settle timings (`--settle-content-quiet-ms`, off by
 default: settle once the content is still while animations run), the
 per-page layout budget (`--layout-budget-ms`), third-party stall limit,

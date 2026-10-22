@@ -143,6 +143,13 @@ struct CrawlArgs {
     /// Offer HTTP/2 to servers (HTTP/1.1 only by default).
     #[arg(long)]
     http2: bool,
+    /// PEM file of root certificates to trust besides the built-in ones
+    /// (e.g. the Russian Trusted Root CA); repeatable.
+    #[arg(long = "ca-cert", value_name = "PEM")]
+    ca_certs: Vec<std::path::PathBuf>,
+    /// Accept any TLS certificate.
+    #[arg(long)]
+    insecure: bool,
     /// Upper bound on requests per second to the site.
     #[arg(long)]
     max_rps: Option<f64>,
@@ -402,6 +409,8 @@ fn crawl_config(args: &CrawlArgs) -> Result<CrawlConfig> {
         config.http.external_concurrency = concurrency;
     }
     config.http.http2 |= args.http2;
+    config.http.ca_certs.extend(args.ca_certs.iter().cloned());
+    config.http.accept_invalid_certs |= args.insecure;
     if args.max_rps.is_some() {
         config.http.max_rps = args.max_rps;
     }

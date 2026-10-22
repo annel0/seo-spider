@@ -3,6 +3,7 @@
 
 use std::time::{Duration, Instant};
 
+use anyhow::Context;
 use reqwest::Client;
 use seo_page::HttpInfo;
 use url::Url;
@@ -17,6 +18,9 @@ pub struct ClientOptions<'a> {
     pub cookies: bool,
     /// Offer HTTP/2 (negotiated by ALPN) instead of HTTP/1.1 only.
     pub http2: bool,
+    /// PEM files of extra root certificates.
+    pub ca_certs: &'a [std::path::PathBuf],
+    pub accept_invalid_certs: bool,
 }
 
 pub fn client(options: &ClientOptions<'_>) -> anyhow::Result<Client> {
@@ -35,7 +39,16 @@ pub fn client(options: &ClientOptions<'_>) -> anyhow::Result<Client> {
             reqwest::header::HeaderValue::from_str(value)?,
         );
     }
-    let builder = Client::builder();
+    let mut builder = Client::builder().danger_accept_invalid_certs(options.accept_invalid_certs);
+    for path in options.ca_certs {
+        let pem = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+        let certificates = reqwest::Certificate::from_pem_bundle(&pem)
+            .with_context(|| format!("reading certificates from {}", path.display()))?;
+        anyhow::ensure!(!certificates.is_empty(), "no PEM certificates in {}", path.display());
+        for certificate in certificates {
+            builder = builder.add_root_certificate(certificate);
+        }
+    }
     // Over HTTP/2 a status check drops its response unread, and further
     // streams on the same connection then stall until the timeout (seen on
     // Cloudflare hosts; obscura-net hit the same and defaults to HTTP/1.1

@@ -213,6 +213,13 @@ pub struct HttpConfig {
     /// the same HTTP/2 connection only at the timeout (Vercel-hosted images
     /// linked from vuejs.org: that crawl went from 2.4 s to 21 s).
     pub http2: bool,
+    /// PEM files of root certificates trusted besides the built-in ones.
+    /// Sites on a Russian Trusted Root CA certificate (tbank.ru) otherwise
+    /// fail with UnknownIssuer, as in Chrome. Applies to the crawler's own
+    /// requests, not the renderer's.
+    pub ca_certs: Vec<std::path::PathBuf>,
+    /// Accept any certificate, expired or for another name included.
+    pub accept_invalid_certs: bool,
 }
 
 impl Default for HttpConfig {
@@ -234,6 +241,8 @@ impl Default for HttpConfig {
             cookies: true,
             head_for_status: true,
             http2: false,
+            ca_certs: Vec::new(),
+            accept_invalid_certs: false,
         }
     }
 }
