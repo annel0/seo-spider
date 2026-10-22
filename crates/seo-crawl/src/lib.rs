@@ -680,11 +680,28 @@ async fn fetch_retrying(ctx: &Ctx, item: &Item, mode: fetch::BodyMode, timeout: 
 async fn render_page(
     pool: &RenderPool,
     url: &Url,
-    downloaded: Option<seo_render::Document>,
+    mut downloaded: Option<seo_render::Document>,
     ctx: &Ctx,
 ) -> RenderedPage {
+    let mut attempt = 0;
+    let rendered = loop {
+        let rendered = pool.render_document(url.to_string(), downloaded.take()).await;
+        // The renderer's own request for the document can be reset or
+        // refused where the crawler's went through: retry it as the
+        // crawler retries a request that got no answer.
+        let unanswered = rendered.error.as_deref().is_some_and(|error| error.starts_with("Network error"));
+        if !unanswered || attempt >= ctx.retries {
+            break rendered;
+        }
+        tracing::debug!(url = %url, attempt, "retrying render");
+        tokio::time::sleep(Duration::from_millis(500 << attempt.min(5))).await;
+        attempt += 1;
+        if let Some(pacer) = &ctx.pacer {
+            pacer.pace().await;
+        }
+    };
     let Rendered { final_url, error, html, dcl_ms, total_ms, settled, load_fired, resources, console_errors, .. } =
-        pool.render_document(url.to_string(), downloaded).await;
+        rendered;
     let (document, body) = if error.is_none() {
         let base = Url::parse(&final_url).unwrap_or_else(|_| url.clone());
         let facts = seo_page::extract_with(&html, &base, Source::Rendered, &ctx.extract);
