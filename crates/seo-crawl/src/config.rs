@@ -399,6 +399,8 @@ impl RenderSettings {
             skip_images: self.skip_images,
             skip_fonts: self.skip_fonts,
             ca_certs: None,
+            cookies: Vec::new(),
+            headers: Vec::new(),
         }
     }
 }

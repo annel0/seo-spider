@@ -68,7 +68,11 @@ again), `--max-rps`, robots.txt `Crawl-delay`, `--retries`, `--http2`
 `--ca-cert file.pem` trusts more root certificates (sites on the Russian
 Trusted Root CA, such as tbank.ru, fail with UnknownIssuer otherwise),
 `--insecure` accepts any certificate (the crawler's requests only; the
-renderer trusts `--ca-cert` too). Rendering:
+renderer trusts `--ca-cert` too). `--header` goes to rendering as well:
+cookies into the renderer's jar for the start hosts, other headers with
+every request, except Authorization, which would reach third parties.
+gazeta.ru and lenta.ru send a crawler to a Sber ID page without
+`--header "Cookie: unity_pause_sso=1"`. Rendering:
 `--render-threads`, settle timings (`--settle-content-quiet-ms`, off by
 default: settle once the content is still while animations run), the
 per-page layout budget (`--layout-budget-ms`), third-party stall limit,

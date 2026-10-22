@@ -65,6 +65,11 @@ pub struct RenderConfig {
     /// PEM bundle of root certificates trusted besides the built-in ones
     /// (obscura reads it as SSL_CERT_FILE).
     pub ca_certs: Option<std::path::PathBuf>,
+    /// Cookies as (page URL, "name=value"), set in each thread's jar so the
+    /// cookies a page sets join them.
+    pub cookies: Vec<(String, String)>,
+    /// Headers sent with every request of a render.
+    pub headers: Vec<(String, String)>,
 }
 
 /// A document the crawler already has, for `RenderPool::render_document`.
@@ -102,6 +107,8 @@ impl Default for RenderConfig {
             skip_fonts: true,
             timezone: None,
             ca_certs: None,
+            cookies: Vec::new(),
+            headers: Vec::new(),
             locale: None,
             reuse_documents: false,
         }
@@ -260,6 +267,12 @@ fn spawn_worker(worker: usize, jobs: async_channel::Receiver<Job>, config: Rende
                 if let Some(locale) = &config.locale {
                     context.http_client.set_accept_language(&accept_language(locale)).await;
                 }
+                for (url, cookie) in &config.cookies {
+                    if let Ok(url) = url::Url::parse(url) {
+                        context.cookie_jar.set_cookie(&format!("{cookie}; Path=/"), &url);
+                    }
+                }
+                context.http_client.extra_headers.write().await.extend(config.headers.iter().cloned());
                 let prefetched = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
                 if config.reuse_documents {
                     *context.http_client.interceptor.write().await = Some(Box::new(Prefetched(prefetched.clone())));

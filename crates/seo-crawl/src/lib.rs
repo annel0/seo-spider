@@ -120,6 +120,21 @@ pub async fn crawl_with(
         Some(settings) => {
             let mut render = settings.to_render_config();
             render.ca_certs = ca_bundle(&config.http.ca_certs)?;
+            // The site's cookies go into the renderer's jar for the start
+            // hosts (gazeta.ru and lenta.ru pass their Sber ID redirect on
+            // one); other headers go with every request, so credentials stay
+            // with the crawler: they would reach third-party hosts too.
+            for (name, value) in &config.http.headers {
+                if name.eq_ignore_ascii_case("cookie") {
+                    for start in &config.start_urls {
+                        for pair in value.split(';').map(str::trim).filter(|pair| !pair.is_empty()) {
+                            render.cookies.push((start.to_string(), pair.to_string()));
+                        }
+                    }
+                } else if !name.eq_ignore_ascii_case("authorization") && !name.eq_ignore_ascii_case("proxy-authorization") {
+                    render.headers.push((name.clone(), value.clone()));
+                }
+            }
             Some(RenderPool::new(render))
         }
         None => None,
