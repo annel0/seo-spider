@@ -150,6 +150,10 @@ struct CrawlArgs {
     /// Accept any TLS certificate.
     #[arg(long)]
     insecure: bool,
+    /// With --fetch head: KB of the document read and dropped after
+    /// `</head>` to keep the connection (0: cut there, least traffic).
+    #[arg(long, value_name = "KB")]
+    head_drain_kb: Option<usize>,
     /// Upper bound on requests per second to the site.
     #[arg(long)]
     max_rps: Option<f64>,
@@ -412,6 +416,9 @@ fn crawl_config(args: &CrawlArgs) -> Result<CrawlConfig> {
         config.http.external_concurrency = concurrency;
     }
     config.http.http2 |= args.http2;
+    if let Some(kb) = args.head_drain_kb {
+        config.http.head_drain_bytes = kb << 10;
+    }
     config.http.ca_certs.extend(args.ca_certs.iter().cloned());
     config.http.accept_invalid_certs |= args.insecure;
     if args.max_rps.is_some() {

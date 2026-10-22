@@ -74,8 +74,10 @@ pub fn client(options: &ClientOptions<'_>) -> anyhow::Result<Client> {
 pub enum BodyMode {
     /// Status and headers only.
     None,
-    /// Up to the end of `<head>`, at most this many bytes.
-    Head(usize),
+    /// Up to the end of `<head>`, at most `limit` bytes; then up to `drain`
+    /// more are read and dropped, so that an HTTP/1.1 connection is reused
+    /// instead of closed mid-body.
+    Head { limit: usize, drain: usize },
     /// The whole body, at most this many bytes.
     Full(usize),
 }
@@ -84,6 +86,8 @@ pub enum BodyMode {
 pub struct Body {
     pub bytes: Vec<u8>,
     pub html: String,
+    /// Bytes read off the response, those dropped after `</head>` included.
+    pub read: u64,
 }
 
 /// What a request came back with.
@@ -145,11 +149,12 @@ pub async fn fetch(
             target.set_fragment(None);
             target.to_string()
         });
-    let (limit, head_only) = match mode {
-        BodyMode::Full(limit) => (limit, false),
-        BodyMode::Head(limit) => (limit, true),
-        BodyMode::None => (0, false),
+    let (limit, head_only, drain) = match mode {
+        BodyMode::Full(limit) => (limit, false, 0),
+        BodyMode::Head { limit, drain } => (limit, true, drain),
+        BodyMode::None => (0, false, 0),
     };
+    let mut read = 0u64;
     if limit == 0 || !response.status().is_success() || !http.is_html() {
         http.size = response.content_length().unwrap_or(0);
         return Fetched { http, body: None, unreachable: false };
@@ -158,11 +163,24 @@ pub async fn fetch(
     loop {
         match response.chunk().await {
             Ok(Some(chunk)) => {
+                read += chunk.len() as u64;
                 let searched = body.len().saturating_sub(6);
                 body.extend_from_slice(&chunk);
                 if head_only {
                     if let Some(end) = head_end(&body, searched) {
+                        // Over HTTP/1.1 a response left unread costs its
+                        // connection: the next request opens a new one.
+                        let mut drained = body.len() - end;
                         body.truncate(end);
+                        while drained <= drain {
+                            match response.chunk().await {
+                                Ok(Some(chunk)) => {
+                                    drained += chunk.len();
+                                    read += chunk.len() as u64;
+                                }
+                                _ => break,
+                            }
+                        }
                         break;
                     }
                 }
@@ -184,7 +202,7 @@ pub async fn fetch(
     // A head-only read stops early; the size is what was read.
     http.size = body.len() as u64;
     let html = decode(&body, http.content_type.as_deref());
-    Fetched { http, body: Some(Body { bytes: body, html }), unreachable: false }
+    Fetched { http, body: Some(Body { bytes: body, html, read }), unreachable: false }
 }
 
 /// Where the `<head>` of a document ends: the position of `</head` or of
@@ -276,6 +294,74 @@ mod tests {
         assert_eq!(head_end(doc, 0), Some(28));
         assert_eq!(head_end(b"<head><title>t</title><BODY>", 0), Some(22));
         assert_eq!(head_end(b"<head><title>t</title>", 0), None);
+    }
+
+    /// Serves one page over HTTP/1.1 keep-alive and counts connections.
+    async fn page_server() -> (Url, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = connections.clone();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let body = format!("<html><head><title>t</title></head><body>{}</body></html>", "x".repeat(100_000));
+                    let mut request = Vec::new();
+                    let mut buffer = [0u8; 4096];
+                    loop {
+                        let Ok(read) = socket.read(&mut buffer).await else { return };
+                        if read == 0 {
+                            return;
+                        }
+                        request.extend_from_slice(&buffer[..read]);
+                        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                            request.clear();
+                            let head = format!(
+                                "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\n\r\n",
+                                body.len()
+                            );
+                            if socket.write_all(head.as_bytes()).await.is_err()
+                                || socket.write_all(body.as_bytes()).await.is_err()
+                            {
+                                return;
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        (url, connections)
+    }
+
+    #[tokio::test]
+    async fn reading_past_head_keeps_the_connection() {
+        let headers = std::collections::BTreeMap::new();
+        let options = ClientOptions {
+            user_agent: "test",
+            timeout: Duration::from_secs(5),
+            connect_timeout: Duration::from_secs(5),
+            concurrency: 1,
+            headers: &headers,
+            cookies: false,
+            http2: false,
+            ca_certs: &[],
+            accept_invalid_certs: false,
+        };
+        for (drain, expected) in [(0, 2), (256 << 10, 1)] {
+            let client = client(&options).unwrap();
+            let (url, connections) = page_server().await;
+            let mode = BodyMode::Head { limit: 256 << 10, drain };
+            for _ in 0..2 {
+                let fetched = fetch(&client, &url, mode, None, false).await;
+                let body = fetched.body.expect("an HTML body");
+                assert_eq!(body.html, "<html><head><title>t</title>");
+                assert_eq!(fetched.http.size, body.bytes.len() as u64);
+                assert!(drain == 0 || body.read > 100_000);
+            }
+            assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), expected, "drain {drain}");
+        }
     }
 
     #[test]

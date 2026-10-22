@@ -131,14 +131,11 @@ impl CrawlConfig {
         let mut config = CrawlConfig::default();
         match name {
             "headers" => {
+                // HEAD over HTTP/1.1. A GET cut after its headers is faster
+                // where a CDN answers HEAD past its cache (shopify.com: 11 s
+                // -> 4.4 s for 200 URLs), slower elsewhere (nuxt.com 1.7 ->
+                // 6.7 s, webflow.com 4.4 -> 10.8 s; 8 sites: 39 -> 49 s).
                 config.fetch = FetchLevel::Status;
-                // A GET dropped after its headers, over HTTP/2: CDNs answer
-                // HEAD past their cache (shopify.com, 300 URLs: median TTFB
-                // 513 ms with HEAD, 98 ms with GET; 12.6 s -> 3.2 s). No
-                // resource or external checks run here, where GET after a
-                // refused HEAD stalled.
-                config.http.http2 = true;
-                config.http.head_for_status = false;
                 config.follow_links = false;
                 config.use_sitemaps = true;
                 config.check_external = false;
@@ -147,7 +144,6 @@ impl CrawlConfig {
             }
             "minimal" => {
                 config.fetch = FetchLevel::Head;
-                config.http.http2 = true;
                 config.follow_links = false;
                 config.use_sitemaps = true;
                 config.check_external = false;
@@ -207,18 +203,24 @@ pub struct HttpConfig {
     pub max_body: usize,
     /// How far into a document `fetch = "head"` reads looking for `</head>`.
     pub head_max_bytes: usize,
+    /// After `</head>`, read and drop up to this much more of the document,
+    /// so the connection is reused rather than closed mid-body; 0 cuts
+    /// there, for the least traffic.
+    pub head_drain_bytes: usize,
     /// Extra request headers (cookies, authorization, Accept-Language...).
     pub headers: BTreeMap<String, String>,
     /// Keep cookies the site sets for the rest of the crawl.
     pub cookies: bool,
     /// Check resources and external links with HEAD (GET when refused).
     pub head_for_status: bool,
-    /// Offer HTTP/2 to servers. A `fetch = "head"` crawl gains most: over
-    /// HTTP/1.1 each read cut at `</head>` costs the connection (vuejs.org:
-    /// 4.5 s -> 1.7 s). Off by default: a whole-document crawl checks
-    /// resources too, and some hosts answer a GET after a refused HEAD on
-    /// the same HTTP/2 connection only at the timeout (Vercel-hosted images
-    /// linked from vuejs.org: that crawl went from 2.4 s to 21 s).
+    /// Offer HTTP/2 to servers. A `fetch = "head"` crawl gains most where
+    /// it works: over HTTP/1.1 each read cut at `</head>` costs the
+    /// connection (vuejs.org: 2.4 s -> 1.5 s). Off by default, presets
+    /// included: every cut read resets its stream, and servers guarding
+    /// against rapid reset turn on the client (webflow.com: 198 of 200 URLs
+    /// failed with a protocol error, ghost.org answered 403 to half); some
+    /// hosts answer a GET after a refused HEAD on the same connection only
+    /// at the timeout (Vercel-hosted images: 2.4 s -> 21 s).
     pub http2: bool,
     /// PEM files of root certificates trusted besides the built-in ones.
     /// Sites on a Russian Trusted Root CA certificate (tbank.ru) otherwise
@@ -243,6 +245,7 @@ impl Default for HttpConfig {
             connect_timeout_ms: 5_000,
             max_body: 10 << 20,
             head_max_bytes: 256 << 10,
+            head_drain_bytes: 0,
             headers: BTreeMap::new(),
             cookies: true,
             head_for_status: true,
@@ -478,10 +481,10 @@ mod tests {
         let headers = CrawlConfig::preset("headers").unwrap();
         assert_eq!(headers.fetch, FetchLevel::Status);
         assert!(!headers.follow_links && headers.use_sitemaps && !headers.check_resources);
-        assert!(headers.http.http2 && !headers.http.head_for_status);
+        assert!(!headers.http.http2 && headers.http.head_for_status);
         let minimal = CrawlConfig::preset("minimal").unwrap();
         assert_eq!(minimal.fetch, FetchLevel::Head);
-        assert!(!minimal.follow_links && minimal.use_sitemaps);
+        assert!(!minimal.follow_links && minimal.use_sitemaps && !minimal.http.http2);
         let dump = CrawlConfig::preset("dump").unwrap();
         assert!(dump.render.is_some() && dump.store.raw_html && dump.store.rendered_html);
         assert!(CrawlConfig::preset("nope").is_none());

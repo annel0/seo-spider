@@ -156,7 +156,9 @@ pub async fn crawl_with(
         retries: config.http.retries,
         body: match config.fetch {
             FetchLevel::Status => fetch::BodyMode::None,
-            FetchLevel::Head => fetch::BodyMode::Head(config.http.head_max_bytes),
+            FetchLevel::Head => {
+                fetch::BodyMode::Head { limit: config.http.head_max_bytes, drain: config.http.head_drain_bytes }
+            }
             FetchLevel::Full => fetch::BodyMode::Full(config.http.max_body),
         },
         raw_extract: match config.fetch {
@@ -681,7 +683,7 @@ async fn process(ctx: Arc<Ctx>, item: Item) -> Outcome {
     // Everything below is CPU work, done here on a runtime worker so it runs
     // in parallel across pages instead of on the dispatcher.
     let mut raw_body = None;
-    let bytes_read = body.as_ref().map_or(0, |body| body.bytes.len() as u64);
+    let bytes_read = body.as_ref().map_or(0, |body| body.read);
     let renderable = item.internal && http.is_html() && (200..300).contains(&http.status);
     // Only a whole document stands in for the renderer's own request. The
     // body is decoded already, so its transfer headers do not apply.

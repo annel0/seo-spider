@@ -48,13 +48,15 @@ Settings come in layers: a preset, then a TOML file (`--config`), then flags.
 
 | Preset | Reads |
 |---|---|
-| `headers` | status and response headers of the start URLs and sitemap URLs (a GET dropped after the headers, over HTTP/2: CDNs answer HEAD past their cache) |
+| `headers` | status and response headers (HEAD, no body) of the start URLs and sitemap URLs |
 | `minimal` | status, headers and `<head>` of the start URLs and sitemap URLs; nothing else requested |
 | `seo` (default) | whole raw HTML, links followed, resources and external links checked |
 | `js` | `seo` plus rendering |
 | `dump` | `js` keeping the raw and rendered documents (`seo-spider bodies` writes them out) |
 
-How much is downloaded: `--fetch status|head|full` (head stops at `</head>`),
+How much is downloaded: `--fetch status|head|full` (head stops at `</head>`;
+`--head-drain-kb 512` reads and drops up to 512 KB more so the connection is
+reused: 7 sites took 22 s instead of 44 s, reading 302 MB instead of 38),
 what is extracted: `--extract all|head|links,headings,text,...`, what is kept:
 `--store-html raw|rendered|both`, `--store-links` (link rows for SQL; exports
 and checks read links from the stored facts). A crawl that follows links
@@ -64,7 +66,9 @@ read. Checks whose input was not extracted report nothing.
 Speed and politeness: `--concurrency` (the site), `--external-concurrency`
 (other hosts, at most 4 per host; a host that does not connect is not asked
 again), `--max-rps`, robots.txt `Crawl-delay`, `--retries`, `--http2`
-(on in the `minimal` preset, where it is several times faster). TLS:
+(faster for `minimal` where it works, but off everywhere by default: cut
+reads reset HTTP/2 streams, and sites guarding against rapid reset, such
+as webflow.com and ghost.org, then fail or answer 403). TLS:
 `--ca-cert file.pem` trusts more root certificates (sites on the Russian
 Trusted Root CA, such as tbank.ru, fail with UnknownIssuer otherwise),
 `--insecure` accepts any certificate; both apply to rendering too. `--header` goes to rendering as well:
