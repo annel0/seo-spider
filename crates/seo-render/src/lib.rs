@@ -75,7 +75,9 @@ impl Default for RenderConfig {
     fn default() -> Self {
         Self {
             // Rendering waits on the network as much as it computes: one
-            // thread per core, within reason for memory (~70 MB each).
+            // thread per core, within reason for memory: a thread holds
+            // ~25 MB on simple pages and 300-400 MB at its peak on big
+            // documentation pages (MDN, react.dev).
             threads: std::thread::available_parallelism().map_or(4, |cores| cores.get()).clamp(2, 16),
             // A page whose spinners and carousels never stop animating
             // settles once its content has been still for a second.
