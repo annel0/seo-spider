@@ -42,6 +42,9 @@ struct Cli {
 enum Command {
     /// Crawl a site (or a list of URLs) into the database.
     Crawl(Box<CrawlArgs>),
+    /// Go on with a crawl that was interrupted or stopped, or take a
+    /// finished one further with a higher --max-urls.
+    Continue(ContinueArgs),
     /// Run the checks again over a stored crawl.
     Check(CheckArgs),
     /// Write the tabs of a crawl as CSV files or one XLSX workbook.
@@ -69,6 +72,27 @@ struct UiArgs {
     /// Required on API requests; needed to listen anywhere but localhost.
     #[arg(long)]
     token: Option<String>,
+}
+
+#[derive(clap::Args)]
+struct ContinueArgs {
+    #[arg(long, default_value = "crawl.sqlite")]
+    db: PathBuf,
+    /// Crawl id; the latest crawl by default.
+    #[arg(long)]
+    crawl: Option<i64>,
+    /// A higher limit than the crawl had.
+    #[arg(long)]
+    max_urls: Option<usize>,
+    /// HTTP requests in flight to the site.
+    #[arg(long)]
+    concurrency: Option<usize>,
+    /// Render threads, for a crawl that renders.
+    #[arg(long)]
+    render_threads: Option<usize>,
+    /// Skip the checks after the crawl.
+    #[arg(long)]
+    no_checks: bool,
 }
 
 #[derive(clap::Args)]
@@ -347,6 +371,7 @@ fn main() -> Result<()> {
         .init();
     match Cli::parse().command {
         Command::Crawl(args) => crawl(*args),
+        Command::Continue(args) => continue_crawl(args),
         Command::Check(args) => check(args),
         Command::Export(args) => export(args),
         Command::Bodies(args) => bodies(args),
@@ -595,9 +620,35 @@ fn crawl(args: CrawlArgs) -> Result<()> {
         bail!("give a start URL, --list or start_urls in --config");
     }
     let store = Store::open(&args.db)?;
+    drive(store, &args.db, args.no_checks, |store, control| seo_crawl::crawl_with(config, store, control))
+}
+
+fn continue_crawl(args: ContinueArgs) -> Result<()> {
+    let store = Store::open(&args.db)?;
+    let crawl_id = crawl_id(&store, args.crawl)?;
+    let mut config: CrawlConfig = serde_json::from_str(&store.crawl_config(crawl_id)?)
+        .with_context(|| format!("the settings of crawl {crawl_id}"))?;
+    if let Some(max_urls) = args.max_urls {
+        config.max_urls = max_urls;
+    }
+    if let Some(concurrency) = args.concurrency {
+        config.http.concurrency = concurrency;
+    }
+    if let (Some(threads), Some(render)) = (args.render_threads, config.render.as_mut()) {
+        render.threads = threads;
+    }
+    eprintln!("continuing crawl {crawl_id} of {}", config.start_urls.first().map_or("", |url| url.as_str()));
+    drive(store, &args.db, args.no_checks, move |store, control| seo_crawl::continue_with(config, store, crawl_id, control))
+}
+
+/// Runs a crawl to its end on a runtime of its own, then its checks.
+/// Ctrl-C or SIGTERM stops it: what is in flight is finished and stored,
+/// and the checks run on what was crawled.
+fn drive<F>(store: Store, db: &std::path::Path, no_checks: bool, run: impl FnOnce(Store, seo_crawl::CrawlControl) -> F) -> Result<()>
+where
+    F: std::future::Future<Output = Result<(Store, seo_crawl::CrawlSummary)>>,
+{
     let runtime = tokio::runtime::Runtime::new()?;
-    // Ctrl-C or SIGTERM stops the crawl: what is in flight is finished and
-    // stored, and the checks run on what was crawled.
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     runtime.spawn({
         let stop = stop.clone();
@@ -645,7 +696,7 @@ fn crawl(args: CrawlArgs) -> Result<()> {
         sender
     });
     let control = seo_crawl::CrawlControl { stop, progress, ..Default::default() };
-    let (mut store, summary) = runtime.block_on(seo_crawl::crawl_with(config, store, control))?;
+    let (mut store, summary) = runtime.block_on(run(store, control))?;
     eprintln!(
         "crawl {}{}: {} URLs, {} pages, {} rendered ({} render errors), {} errors, {} blocked by robots.txt, {:.1} MB read in {:.1} s ({:.0} URLs/s)",
         summary.crawl_id,
@@ -660,12 +711,12 @@ fn crawl(args: CrawlArgs) -> Result<()> {
         summary.elapsed.as_secs_f64(),
         summary.urls as f64 / summary.elapsed.as_secs_f64().max(0.001),
     );
-    if !args.no_checks {
+    if !no_checks {
         let checks_started = std::time::Instant::now();
         let issues = seo_crawl::run_checks(&mut store, summary.crawl_id)?;
         eprintln!("{issues} issues in {:.1} s", checks_started.elapsed().as_secs_f64());
     }
-    eprintln!("database: {}", args.db.display());
+    eprintln!("database: {}", db.display());
     // Render threads hold V8 isolates; exiting without tearing them down is
     // faster and safe once the store is closed.
     drop(store);

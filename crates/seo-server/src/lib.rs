@@ -65,6 +65,7 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
         .route("/api/crawls/{id}/pause", post(pause_crawl))
         .route("/api/crawls/{id}/resume", post(resume_crawl))
         .route("/api/crawls/{id}/stop", post(stop_crawl))
+        .route("/api/crawls/{id}/continue", post(continue_crawl))
         .route("/api/crawls/{id}/events", get(events))
         .route("/api/crawls/{id}/overview", get(overview))
         .route("/api/crawls/{id}/issues", get(issues))
@@ -172,8 +173,7 @@ async fn list_crawls(State(state): State<Arc<AppState>>) -> ApiResult<Vec<CrawlI
             .map(|info| {
                 let state = match &running {
                     Some(running) if running.id == info.id => progress_event(running).state,
-                    _ if info.finished_at.is_some() => "finished",
-                    _ => "interrupted",
+                    _ => closed_state(&info),
                 };
                 CrawlItem { info, state }
             })
@@ -198,6 +198,33 @@ async fn start_crawl(State(state): State<Arc<AppState>>, Json(request): Json<Sta
     let id = started.id;
     *running = Some(started);
     Ok((StatusCode::CREATED, Json(Started { id })))
+}
+
+/// Where a crawl that is not running was left.
+fn closed_state(info: &seo_store::CrawlInfo) -> &'static str {
+    match (&info.finished_at, info.stopped) {
+        (Some(_), true) => "stopped",
+        (Some(_), false) => "finished",
+        (None, _) => "interrupted",
+    }
+}
+
+/// Goes on with an interrupted or stopped crawl (or a finished one, with a
+/// higher limit). One crawl runs at a time.
+async fn continue_crawl(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    Json(request): Json<crawls::ContinueRequest>,
+) -> Result<(StatusCode, Json<Started>), ApiError> {
+    let mut running = state.running.lock().await;
+    if running.as_ref().is_some_and(Running::is_active) {
+        return Err(ApiError(StatusCode::CONFLICT, "обход уже идёт: остановите его или дождитесь конца".into()));
+    }
+    let continued = crawls::resume(state.db.clone(), id, request)
+        .await
+        .map_err(|error| ApiError(StatusCode::BAD_REQUEST, format!("{error:#}")))?;
+    *running = Some(continued);
+    Ok((StatusCode::OK, Json(Started { id })))
 }
 
 /// The running crawl when it is the one asked for.
@@ -227,7 +254,8 @@ async fn stop_crawl(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> 
 #[derive(Serialize, Clone, PartialEq)]
 struct ProgressEvent {
     crawl_id: i64,
-    /// crawling, paused, stopping, checking, finished, failed, interrupted.
+    /// crawling, paused, stopping, checking, finished, stopped, failed,
+    /// interrupted.
     state: &'static str,
     error: Option<String>,
     urls: usize,
@@ -248,6 +276,7 @@ fn progress_event(running: &Running) -> ProgressEvent {
         Phase::Crawling if progress.paused => ("paused", None),
         Phase::Crawling => ("crawling", None),
         Phase::Checking => ("checking", None),
+        Phase::Finished if progress.stopping => ("stopped", None),
         Phase::Finished => ("finished", None),
         Phase::Failed(error) => ("failed", Some(error)),
     };
@@ -283,7 +312,7 @@ async fn events(
                 .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "нет такого обхода".into()))?;
             Some(ProgressEvent {
                 crawl_id: id,
-                state: if info.finished_at.is_some() { "finished" } else { "interrupted" },
+                state: closed_state(&info),
                 error: None,
                 urls: info.urls as usize,
                 pages: 0,
@@ -307,7 +336,7 @@ async fn events(
             (None, Some(event)) if first => event,
             _ => return None,
         };
-        let last = matches!(event.state, "finished" | "failed" | "interrupted");
+        let last = matches!(event.state, "finished" | "stopped" | "failed" | "interrupted");
         let sse = Event::default().event("progress").json_data(&event).unwrap_or_default();
         // After the last event the stream ends on the next poll.
         let next = if last { (None, None, false) } else { (running, None, false) };

@@ -29,7 +29,8 @@ export function useInterval(callback: () => void, ms: number | null) {
 export type SpeedPoint = { seconds: number; rate: number };
 
 /// The crawl's progress from the server's events, and its speed over time.
-export function useProgress(crawlId: number | null) {
+/// A new `session` (a crawl continued) listens again.
+export function useProgress(crawlId: number | null, session = 0) {
   const [progress, setProgress] = useState<Progress | null>(null);
   const [speed, setSpeed] = useState<SpeedPoint[]>([]);
   const last = useRef<{ urls: number; ms: number } | null>(null);
@@ -51,9 +52,9 @@ export function useProgress(crawlId: number | null) {
         }
         last.current = { urls: next.urls, ms: next.elapsed_ms };
       }
-      if (next.state === "finished" || next.state === "failed" || next.state === "interrupted") source.close();
+      if (["finished", "stopped", "failed", "interrupted"].includes(next.state)) source.close();
     });
     return () => source.close();
-  }, [crawlId]);
+  }, [crawlId, session]);
   return { progress, speed };
 }

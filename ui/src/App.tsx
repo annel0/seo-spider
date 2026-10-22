@@ -47,7 +47,9 @@ export function App() {
   const [renderDefaults, setRenderDefaults] = useState<Json>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settings = useMemo(() => merge(base, patch), [base, patch]);
-  const { progress, speed } = useProgress(crawlId);
+  // Bumped when a crawl is continued: its progress is listened to again.
+  const [session, setSession] = useState(0);
+  const { progress, speed } = useProgress(crawlId, session);
   const live = isActive(progress?.state);
 
   const loadCrawls = useCallback(() => api.crawls().then(setCrawls).catch(() => undefined), []);
@@ -135,6 +137,22 @@ export function App() {
     }
   };
 
+  const continueCrawl = async () => {
+    if (crawlId === null) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.continueCrawl(crawlId, typeof patch.max_urls === "number" ? { max_urls: patch.max_urls } : {});
+      setSession((value) => value + 1);
+      setView({ kind: "overview" });
+      loadCrawls();
+    } catch (failure) {
+      setError((failure as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const control = (action: (id: number) => Promise<void>) => () => {
     if (crawlId !== null) action(crawlId).catch((failure: Error) => setError(failure.message));
   };
@@ -173,6 +191,7 @@ export function App() {
           setPatch((current) => setPath(current, base, "render.threads", threads ?? get(base, "render.threads") ?? get(renderDefaults, "threads")))
         }
         onSettings={() => setSettingsOpen((open) => !open)}
+        onContinue={continueCrawl}
         onSelect={(id) => {
           setCrawlId(id);
           setSettingsOpen(false);

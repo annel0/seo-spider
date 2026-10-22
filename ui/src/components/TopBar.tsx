@@ -18,6 +18,7 @@ const stateColour: Record<string, string> = {
   stopping: "--warn",
   checking: "--info-soft",
   finished: "--ok",
+  stopped: "--warn",
   failed: "--bad",
   interrupted: "--muted",
 };
@@ -41,6 +42,7 @@ export function CommandBar({
   onLimit,
   onThreads,
   onSettings,
+  onContinue,
   onSelect,
   onStart,
   onPause,
@@ -67,6 +69,8 @@ export function CommandBar({
   onLimit: (limit: number | undefined) => void;
   onThreads: (threads: number | undefined) => void;
   onSettings: () => void;
+  /// Goes on with the selected crawl, interrupted or stopped.
+  onContinue: () => void;
   onSelect: (id: number | null) => void;
   onStart: (startUrl: string) => void;
   onPause: () => void;
@@ -77,6 +81,8 @@ export function CommandBar({
   const [invalid, setInvalid] = useState(false);
   const active = isActive(progress?.state);
   const chosen = presets.find((item) => item.name === preset);
+  const selected = crawls.find((crawl) => crawl.id === crawlId);
+  const continuable = !active && (selected?.state === "interrupted" || selected?.state === "stopped");
 
   const start = () => {
     const typed = url.trim();
@@ -117,6 +123,15 @@ export function CommandBar({
         <a className="button" href={exportHref} download title="Все вкладки обхода одной книгой Excel">
           <Icon name="download" /> XLSX
         </a>
+      )}
+      {continuable && (
+        <button
+          onClick={onContinue}
+          disabled={busy}
+          title={`Продолжить с того места, где обход ${selected?.state === "stopped" ? "остановили" : "прервался"}${limit ? `, до ${formatCount(limit)} URL` : ""}`}
+        >
+          <Icon name="play" /> Продолжить
+        </button>
       )}
 
       {active && crawlId !== null ? (

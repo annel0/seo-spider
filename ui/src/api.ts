@@ -10,6 +10,7 @@ export type CrawlState =
   | "stopping"
   | "checking"
   | "finished"
+  | "stopped"
   | "failed"
   | "interrupted";
 
@@ -202,6 +203,9 @@ export const api = {
   pause: (id: number) => call<void>(`/api/crawls/${id}/pause`, { method: "POST" }),
   resume: (id: number) => call<void>(`/api/crawls/${id}/resume`, { method: "POST" }),
   stop: (id: number) => call<void>(`/api/crawls/${id}/stop`, { method: "POST" }),
+  /// Goes on with an interrupted or stopped crawl; `resume` ends a pause.
+  continueCrawl: (id: number, request: { max_urls?: number }) =>
+    call<{ id: number }>(`/api/crawls/${id}/continue`, { method: "POST", body: JSON.stringify(request) }),
   overview: (id: number) => call<Overview>(`/api/crawls/${id}/overview`),
   issues: (id: number) => call<IssueCount[]>(`/api/crawls/${id}/issues`),
   tabs: (id: number) => call<TabDef[]>(`/api/crawls/${id}/tabs`),

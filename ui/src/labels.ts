@@ -23,6 +23,7 @@ export const stateLabels: Record<CrawlState, string> = {
   checking: "Проверки",
   finished: "Готово",
   failed: "Ошибка",
+  stopped: "Остановлен",
   interrupted: "Прерван",
 };
 

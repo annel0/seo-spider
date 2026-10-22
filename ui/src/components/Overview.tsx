@@ -183,7 +183,7 @@ export function Overview({
   const indexable = overview.indexability.find(([state]) => state === "indexable")?.[1] ?? 0;
   const ttfb = overview.average_ttfb_ms;
   const percent = (part: number, whole: number) => (whole > 0 ? Math.round((part * 100) / whole) : 0);
-  const running = progress !== null && progress.state !== "finished" && progress.state !== "interrupted";
+  const running = progress !== null && !["finished", "stopped", "failed", "interrupted"].includes(progress.state);
 
   return (
     <div className="sheet">

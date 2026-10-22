@@ -18,6 +18,8 @@ pub struct CrawlInfo {
     pub finished_at: Option<String>,
     /// URLs recorded so far.
     pub urls: i64,
+    /// Stopped with URLs still queued: it can be continued.
+    pub stopped: bool,
 }
 
 /// A crawl at a glance, for the overview's charts: counts by group.
@@ -134,7 +136,7 @@ impl Store {
     pub fn crawls(&self) -> Result<Vec<CrawlInfo>> {
         let mut select = self.conn.prepare(
             "SELECT c.id, c.start_url, c.started_at, c.finished_at,
-                    (SELECT count(*) FROM urls u WHERE u.crawl_id = c.id)
+                    (SELECT count(*) FROM urls u WHERE u.crawl_id = c.id), c.stopped
              FROM crawls c ORDER BY c.id DESC",
         )?;
         let crawls = select
@@ -145,6 +147,7 @@ impl Store {
                     started_at: row.get(2)?,
                     finished_at: row.get(3)?,
                     urls: row.get(4)?,
+                    stopped: row.get(5)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;

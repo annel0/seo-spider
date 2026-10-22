@@ -165,6 +165,22 @@ Export tabs: `summary`, `internal`, `external`, `redirects`, `javascript`
 (raw HTML against the rendered DOM), `structured_data`, `custom`, `links`,
 `issues`.
 
+## Continuing a crawl
+
+```
+seo-spider continue --db crawl.sqlite                  # the latest crawl
+seo-spider continue --db crawl.sqlite --crawl 3 --max-urls 50000
+```
+
+A crawl that was interrupted (the process killed, the machine restarted)
+or stopped (Ctrl-C, Stop in the UI) goes on where it was: what it wrote
+stays, the links of its pages are found again from their stored facts,
+and what nothing fetched yet is requested. Robots.txt and the sitemaps are
+read again, the crawl is closed as one (depths over all its pages) and its
+checks run. A finished crawl can be taken further with a higher
+`--max-urls`. The queue of 100,000 crawled pages is rebuilt in about 5 s.
+In the UI, an interrupted or stopped crawl has a Continue button.
+
 ## Web UI
 
 ```

@@ -24,7 +24,9 @@ CREATE TABLE IF NOT EXISTS crawls (
     start_url TEXT NOT NULL,
     started_at TEXT NOT NULL DEFAULT (datetime('now')),
     finished_at TEXT,
-    config TEXT NOT NULL DEFAULT '{}'
+    config TEXT NOT NULL DEFAULT '{}',
+    -- Asked to stop before its queue ran out: `continue` can take it on.
+    stopped INTEGER NOT NULL DEFAULT 0
 );
 
 -- Every URL the crawl requested, redirect hops included.
@@ -165,6 +167,19 @@ impl StoredUrl {
     }
 }
 
+/// A URL as `saved_urls` lists it: enough to know it, not its facts.
+#[derive(Debug, Clone)]
+pub struct SavedUrl {
+    pub id: i64,
+    pub url: String,
+    pub internal: bool,
+    pub depth: Option<u32>,
+    pub status: u16,
+    pub content_type: Option<String>,
+    pub error: Option<String>,
+    pub blocked_by_robots: bool,
+}
+
 /// A URL whose facts are still as stored; `decode` reads them.
 pub struct EncodedUrl {
     pub url: StoredUrl,
@@ -270,6 +285,12 @@ impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
         conn.execute_batch(SCHEMA).context("create schema")?;
+        // Files from before `crawls.stopped`.
+        let stopped: i64 =
+            conn.query_row("SELECT count(*) FROM pragma_table_info('crawls') WHERE name = 'stopped'", [], |row| row.get(0))?;
+        if stopped == 0 {
+            conn.execute_batch("ALTER TABLE crawls ADD COLUMN stopped INTEGER NOT NULL DEFAULT 0;")?;
+        }
         Ok(Store { conn })
     }
 
@@ -293,12 +314,49 @@ impl Store {
         Ok(self.conn.last_insert_rowid())
     }
 
-    pub fn finish_crawl(&self, crawl_id: i64) -> Result<()> {
+    /// Closes a crawl; `stopped` when it was asked to stop with URLs still
+    /// queued.
+    pub fn finish_crawl(&self, crawl_id: i64, stopped: bool) -> Result<()> {
         self.conn.execute(
-            "UPDATE crawls SET finished_at = datetime('now') WHERE id = ?1",
-            params![crawl_id],
+            "UPDATE crawls SET finished_at = datetime('now'), stopped = ?2 WHERE id = ?1",
+            params![crawl_id, stopped],
         )?;
         Ok(())
+    }
+
+    /// Opens a closed or interrupted crawl again, to go on with it under
+    /// `config_json` (its settings, perhaps with a higher limit).
+    pub fn reopen_crawl(&self, crawl_id: i64, config_json: &str) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE crawls SET finished_at = NULL, stopped = 0, config = ?2 WHERE id = ?1",
+            params![crawl_id, config_json],
+        )?;
+        anyhow::ensure!(changed == 1, "no crawl {crawl_id}");
+        Ok(())
+    }
+
+    /// The URLs a crawl has written, in id order (which is the order it
+    /// found them), without their facts.
+    pub fn saved_urls(&self, crawl_id: i64) -> Result<Vec<SavedUrl>> {
+        let mut select = self.conn.prepare(
+            "SELECT id, url, internal, depth, status, content_type, error, blocked_by_robots
+             FROM urls WHERE crawl_id = ?1 ORDER BY id",
+        )?;
+        let urls = select
+            .query_map(params![crawl_id], |row| {
+                Ok(SavedUrl {
+                    id: row.get(0)?,
+                    url: row.get(1)?,
+                    internal: row.get(2)?,
+                    depth: row.get(3)?,
+                    status: row.get(4)?,
+                    content_type: row.get(5)?,
+                    error: row.get(6)?,
+                    blocked_by_robots: row.get(7)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(urls)
     }
 
     /// Builds the indexes for per-URL link lookups, if missing.
@@ -339,7 +397,9 @@ impl Store {
         let tx = self.conn.transaction()?;
         {
             let mut response = tx.prepare_cached(
-                "INSERT INTO urls (id, crawl_id, url, status, location, content_type, ttfb_ms, size, error, headers, internal, depth)
+                // A continued crawl requests again a page whose facts its first
+                // run never wrote, under the same id.
+                "INSERT OR REPLACE INTO urls (id, crawl_id, url, status, location, content_type, ttfb_ms, size, error, headers, internal, depth)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             )?;
             let mut facts_row = tx.prepare_cached(

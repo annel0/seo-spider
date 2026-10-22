@@ -116,9 +116,41 @@ fn merge(target: &mut serde_json::Value, patch: &serde_json::Value) {
     }
 }
 
+/// What may change when a crawl is continued.
+#[derive(Debug, Default, Deserialize)]
+pub struct ContinueRequest {
+    /// A higher limit than the crawl had.
+    pub max_urls: Option<usize>,
+    /// Render threads, for a crawl that renders.
+    pub render_threads: Option<usize>,
+}
+
 /// Starts a crawl into `db` and returns once it is recorded (its id known)
 /// or has failed to start.
 pub async fn start(db: PathBuf, config: CrawlConfig) -> Result<Running> {
+    launch(db, move |store, control| seo_crawl::crawl_with(config, store, control)).await
+}
+
+/// Goes on with an interrupted or stopped crawl of `db`, with its own
+/// settings and what the request changes.
+pub async fn resume(db: PathBuf, crawl_id: i64, request: ContinueRequest) -> Result<Running> {
+    let text = Store::open(&db)?.crawl_config(crawl_id).map_err(|_| anyhow!("нет обхода {crawl_id}"))?;
+    let mut config: CrawlConfig = serde_json::from_str(&text).map_err(|error| anyhow!("настройки обхода: {error}"))?;
+    if let Some(max_urls) = request.max_urls {
+        config.max_urls = max_urls;
+    }
+    if let (Some(threads), Some(render)) = (request.render_threads, config.render.as_mut()) {
+        render.threads = threads.max(1);
+    }
+    launch(db, move |store, control| seo_crawl::continue_with(config, store, crawl_id, control)).await
+}
+
+/// Runs a crawl on a thread and runtime of its own, then its checks, and
+/// returns once it is recorded (its id known) or has failed to start.
+async fn launch<F>(db: PathBuf, run: impl FnOnce(Store, CrawlControl) -> F + Send + 'static) -> Result<Running>
+where
+    F: std::future::Future<Output = Result<(Store, seo_crawl::CrawlSummary)>>,
+{
     let stop = Arc::new(AtomicBool::new(false));
     let pause = Arc::new(AtomicBool::new(false));
     let (progress_sender, mut progress) = watch::channel(CrawlProgress::default());
@@ -139,7 +171,7 @@ pub async fn start(db: PathBuf, config: CrawlConfig) -> Result<Running> {
         };
         let crawled = runtime.block_on(async {
             let store = Store::open(&db)?;
-            seo_crawl::crawl_with(config, store, control).await
+            run(store, control).await
         });
         match crawled {
             Ok((mut store, summary)) => {

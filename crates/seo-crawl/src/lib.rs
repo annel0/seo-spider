@@ -9,6 +9,7 @@
 mod audit;
 mod config;
 mod fetch;
+mod resume;
 mod robots;
 mod writer;
 
@@ -111,11 +112,27 @@ pub async fn crawl(config: CrawlConfig, store: Store) -> Result<(Store, CrawlSum
 /// `crawl`, ending early once `control.stop` is set: no new requests start,
 /// the ones in flight finish and are stored, and the crawl is closed as
 /// usual (depths, states) so its checks and exports work on what it got.
-pub async fn crawl_with(
-    mut config: CrawlConfig,
+pub async fn crawl_with(config: CrawlConfig, store: Store, control: CrawlControl) -> Result<(Store, CrawlSummary)> {
+    run(config, store, control, None).await
+}
+
+/// Goes on with crawl `crawl_id` of `store`, interrupted or stopped, under
+/// `config`: its settings as `Store::crawl_config` holds them, perhaps with
+/// a higher `max_urls`. What it wrote stays and keeps its share of the
+/// budgets; the links of its pages are found again from their stored facts
+/// by the same rules, and what nothing fetched yet is queued (see
+/// `resume`). Robots.txt and the sitemaps are read again, and the crawl is
+/// closed as one: depths and states over all of its URLs.
+pub async fn continue_with(
+    config: CrawlConfig,
     store: Store,
+    crawl_id: i64,
     control: CrawlControl,
 ) -> Result<(Store, CrawlSummary)> {
+    run(config, store, control, Some(crawl_id)).await
+}
+
+async fn run(mut config: CrawlConfig, store: Store, control: CrawlControl, resume: Option<i64>) -> Result<(Store, CrawlSummary)> {
     let CrawlControl { stop, pause, progress, live_issues } = control;
     let started = Instant::now();
     if config.start_urls.is_empty() {
@@ -143,17 +160,105 @@ pub async fn crawl_with(
     // not go to every host its pages link to.
     let no_headers = BTreeMap::new();
     let external_client = fetch::client(&fetch::ClientOptions { headers: &no_headers, ..options })?;
-    let crawl_id = store.start_crawl(config.start_urls[0].as_str(), &serde_json::to_string(&config)?)?;
+    let config_json = serde_json::to_string(&config)?;
+    let crawl_id = match resume {
+        Some(crawl_id) => {
+            store.reopen_crawl(crawl_id, &config_json)?;
+            crawl_id
+        }
+        None => store.start_crawl(config.start_urls[0].as_str(), &config_json)?,
+    };
     if let Some(progress) = &progress {
         progress.send_replace(CrawlProgress { crawl_id, ..CrawlProgress::default() });
     }
-    let base_id = store.next_url_id()?;
-    let writer = writer::Writer::spawn(store, crawl_id)?;
 
     let mut robots = robots::Robots::new(&config.http.robots_agent);
     for start in &config.start_urls {
         robots.load(&client, start).await;
     }
+    let rules = Rules {
+        scope: Scope::new(&config.start_urls, config.crawl_subdomains),
+        filters: Filters::new(&config)?,
+        follow_links: config.follow_links,
+        follow_nofollow: config.follow_nofollow,
+        check_external: config.check_external,
+        check_resources: config.check_resources,
+    };
+    let mut summary = CrawlSummary {
+        crawl_id,
+        urls: 0,
+        pages: 0,
+        rendered: 0,
+        render_errors: 0,
+        errors: 0,
+        blocked_by_robots: 0,
+        bytes: 0,
+        elapsed: Duration::ZERO,
+        stopped: false,
+    };
+
+    // A continued crawl's URLs are known first: they keep their ids, and
+    // the budgets are what they left.
+    let mut frontier = Frontier::new(config.max_urls, config.max_depth, store.next_url_id()?);
+    let registered = match resume {
+        Some(crawl_id) => Some(resume::register(&store, crawl_id, &mut frontier)?),
+        None => None,
+    };
+    for start in &config.start_urls {
+        if let Some(url) = rules.filters.normalize(start.clone()) {
+            let internal = rules.scope.internal(&url);
+            frontier.push(url, 0, internal, false, None, Edge::Other);
+        }
+    }
+    let roots: Vec<usize> = config
+        .start_urls
+        .iter()
+        .filter_map(|start| rules.filters.normalize(start.clone()))
+        .filter_map(|url| frontier.index.get(url.as_str()).copied())
+        .collect();
+
+    let mut in_sitemap = HashSet::new();
+    if config.use_sitemaps {
+        let mut sitemaps = Vec::new();
+        for start in &config.start_urls {
+            let listed = robots.sitemaps(start);
+            if listed.is_empty() {
+                sitemaps.push(format!("{}/sitemap.xml", start.origin().ascii_serialization()));
+            }
+            sitemaps.extend(listed);
+        }
+        sitemaps.sort();
+        sitemaps.dedup();
+        in_sitemap = robots::sitemap_urls(&client, sitemaps, config.max_urls).await;
+        tracing::info!(urls = in_sitemap.len(), "sitemaps read");
+        for listed in &in_sitemap {
+            let Some(url) = Url::parse(listed).ok().and_then(|url| rules.filters.normalize(url)) else { continue };
+            if rules.scope.internal(&url) && rules.filters.allows(&url, true) {
+                frontier.push(url, 1, true, false, None, Edge::Other);
+            }
+        }
+    }
+
+    if let (Some(crawl_id), Some(registered)) = (resume, &registered) {
+        let replayed = Instant::now();
+        let reads_documents = config.fetch != FetchLevel::Status;
+        resume::replay(&store, crawl_id, &mut frontier, registered, &rules, reads_documents, &mut summary)?;
+        // An interrupted crawl never wrote which of its URLs robots.txt
+        // disallows; robots.txt is read again, so it says it again.
+        for &index in &registered.internal {
+            let Ok(url) = Url::parse(&frontier.known[index].url) else { continue };
+            robots.load(&client, &url).await;
+            frontier.known[index].blocked |= !robots.allowed(&url);
+        }
+        summary.blocked_by_robots = frontier.known.iter().filter(|known| known.saved && known.blocked).count();
+        tracing::info!(
+            written = summary.urls,
+            queued = frontier.queued(),
+            seconds = replayed.elapsed().as_secs_f64(),
+            "continuing"
+        );
+    }
+    let writer = writer::Writer::spawn(store, crawl_id)?;
 
     let render = match &config.render {
         Some(settings) => {
@@ -206,16 +311,11 @@ pub async fn crawl_with(
         extract: config.extract,
         custom,
         store: config.store.clone(),
-        rules: Rules {
-            scope: Scope::new(&config.start_urls, config.crawl_subdomains),
-            filters: Filters::new(&config)?,
-            follow_links: config.follow_links,
-            follow_nofollow: config.follow_nofollow,
-            check_external: config.check_external,
-            check_resources: config.check_resources,
-        },
+        rules,
     });
-    let rules = &ctx.rules;
+    if live_issues && config.use_sitemaps {
+        let _ = ctx.in_sitemap.set(in_sitemap.clone());
+    }
     // Tasks in flight per kind. Pages waiting for a render thread keep their
     // HTTP slot free, so allow a few of them per thread on top of the
     // requests; external checks have slots of their own and are capped
@@ -226,52 +326,6 @@ pub async fn crawl_with(
     let external_cap = config.http.external_concurrency.max(1) * 4;
     let (mut internal_in_flight, mut external_in_flight) = (0usize, 0usize);
 
-    let mut frontier = Frontier::new(config.max_urls, config.max_depth);
-    for start in &config.start_urls {
-        if let Some(url) = rules.filters.normalize(start.clone()) {
-            let internal = rules.scope.internal(&url);
-            frontier.push(url, 0, internal, false, None, Edge::Other);
-        }
-    }
-    let roots: Vec<usize> = (0..frontier.known.len()).collect();
-
-    let mut in_sitemap = HashSet::new();
-    if config.use_sitemaps {
-        let mut sitemaps = Vec::new();
-        for start in &config.start_urls {
-            let listed = robots.sitemaps(start);
-            if listed.is_empty() {
-                sitemaps.push(format!("{}/sitemap.xml", start.origin().ascii_serialization()));
-            }
-            sitemaps.extend(listed);
-        }
-        sitemaps.sort();
-        sitemaps.dedup();
-        in_sitemap = robots::sitemap_urls(&client, sitemaps, config.max_urls).await;
-        tracing::info!(urls = in_sitemap.len(), "sitemaps read");
-        if live_issues {
-            let _ = ctx.in_sitemap.set(in_sitemap.clone());
-        }
-        for listed in &in_sitemap {
-            let Some(url) = Url::parse(listed).ok().and_then(|url| rules.filters.normalize(url)) else { continue };
-            if rules.scope.internal(&url) && rules.filters.allows(&url, true) {
-                frontier.push(url, 1, true, false, None, Edge::Other);
-            }
-        }
-    }
-
-    let mut summary = CrawlSummary {
-        crawl_id,
-        urls: 0,
-        pages: 0,
-        rendered: 0,
-        render_errors: 0,
-        errors: 0,
-        blocked_by_robots: 0,
-        bytes: 0,
-        elapsed: Duration::ZERO,
-        stopped: false,
-    };
     let mut tasks = JoinSet::new();
     // Which URL each task fetches, for a task that panics.
     let mut task_items: FxHashMap<tokio::task::Id, (usize, bool)> = FxHashMap::default();
@@ -319,7 +373,7 @@ pub async fn crawl_with(
                             };
                             frontier.known[item.index].saved = true;
                             summary.urls += 1;
-                            let id = base_id + item.index as i64;
+                            let id = frontier.known[item.index].id;
                             writer.send(Write::Response { id, http, internal: true, depth: Some(item.depth) }).await?;
                             continue;
                         }
@@ -380,7 +434,8 @@ pub async fn crawl_with(
                     frontier.known[index].saved = true;
                     summary.urls += 1;
                     summary.errors += 1;
-                    writer.send(Write::Response { id: base_id + index as i64, http, internal, depth: None }).await?;
+                    let id = frontier.known[index].id;
+                    writer.send(Write::Response { id, http, internal, depth: None }).await?;
                     continue;
                 }
             };
@@ -405,7 +460,7 @@ pub async fn crawl_with(
             }
             discovering += discovered.elapsed();
             let stored = Instant::now();
-            record(&writer, base_id, outcome, config.store.links, &mut frontier, &mut summary).await?;
+            record(&writer, outcome, config.store.links, &mut frontier, &mut summary).await?;
             storing += stored.elapsed();
             if let Some(progress) = progress.as_ref().filter(|_| last_report.elapsed() >= REPORT_EVERY) {
                 last_report = Instant::now();
@@ -447,16 +502,13 @@ pub async fn crawl_with(
         .known
         .iter()
         .zip(depths)
-        .enumerate()
-        .filter(|(_, (known, _))| known.saved)
-        .map(|(index, (known, depth))| {
-            (base_id + index as i64, depth, in_sitemap.contains(&known.url), known.blocked)
-        })
+        .filter(|(known, _)| known.saved)
+        .map(|(known, depth)| (known.id, depth, in_sitemap.contains(&known.url), known.blocked))
         .collect();
     let states_done = Instant::now();
     store.set_crawl_states(&states)?;
     let saved = Instant::now();
-    store.finish_crawl(crawl_id)?;
+    store.finish_crawl(crawl_id, summary.stopped)?;
     tracing::info!(
         drain_s = (states_done - loop_done).as_secs_f64(),
         states_s = (saved - states_done).as_secs_f64(),
@@ -1006,14 +1058,13 @@ async fn render_page(
 
 async fn record(
     writer: &writer::Writer,
-    base_id: i64,
     outcome: Outcome,
     links: bool,
     frontier: &mut Frontier,
     summary: &mut CrawlSummary,
 ) -> Result<()> {
     let Outcome { item, http, bytes_read, raw, raw_body, rendered, issues, .. } = outcome;
-    let url_id = base_id + item.index as i64;
+    let url_id = frontier.known[item.index].id;
     frontier.known[item.index].saved = true;
     summary.urls += 1;
     if http.status == 0 || http.status >= 400 {
@@ -1051,8 +1102,22 @@ async fn record(
 /// raw and rendered documents the settings ask to follow or check, each
 /// (URL, edge) once.
 fn discover(outcome: &Outcome, rules: &Rules) -> Vec<Candidate> {
-    let depth = outcome.item.depth;
-    let from_resource = outcome.item.resource;
+    let documents = [
+        outcome.raw.as_ref().map(|document| &document.facts),
+        outcome.rendered.as_ref().and_then(|page| page.document.as_ref()).map(|document| &document.facts),
+    ];
+    discover_from(outcome.item.depth, outcome.item.resource, &outcome.http, documents, rules)
+}
+
+/// `discover` from the parts of an outcome, as a continued crawl has them
+/// from the store.
+fn discover_from(
+    depth: u32,
+    from_resource: bool,
+    http: &HttpInfo,
+    documents: [Option<&PageFacts>; 2],
+    rules: &Rules,
+) -> Vec<Candidate> {
     let mut seen = FxHashSet::default();
     let mut candidates = Vec::new();
     let mut queue = |href: &str, depth: u32, edge: Edge| {
@@ -1073,16 +1138,12 @@ fn discover(outcome: &Outcome, rules: &Rules) -> Vec<Candidate> {
         let resource = edge == Edge::Resource || (edge == Edge::Redirect && from_resource);
         candidates.push(Candidate { url, depth, internal, resource, edge });
     };
-    if outcome.http.is_redirect() {
-        if let Some(location) = &outcome.http.location {
+    if http.is_redirect() {
+        if let Some(location) = &http.location {
             queue(location, depth, Edge::Redirect);
         }
     }
     // Only internal documents are read, so their links are followed.
-    let documents = [
-        outcome.raw.as_ref().map(|document| &document.facts),
-        outcome.rendered.as_ref().and_then(|page| page.document.as_ref()).map(|document| &document.facts),
-    ];
     for facts in documents.into_iter().flatten() {
         let next = depth + 1;
         for link in &facts.links {
@@ -1218,6 +1279,8 @@ enum Edge {
 
 struct Known {
     url: String,
+    /// Its row's id in the store.
+    id: i64,
     /// The crawl wrote a row for it.
     saved: bool,
     blocked: bool,
@@ -1226,7 +1289,8 @@ struct Known {
 }
 
 /// URLs known to the crawl in discovery order and the ones still to fetch.
-/// A URL's position here is also its id offset in the store.
+/// A new URL's id in the store is the next one free, so a fresh crawl
+/// numbers its URLs in the order it found them.
 struct Frontier {
     pages: VecDeque<Item>,
     resources: VecDeque<Item>,
@@ -1238,10 +1302,11 @@ struct Frontier {
     counts: [usize; 3],
     max_urls: usize,
     max_depth: Option<u32>,
+    next_id: i64,
 }
 
 impl Frontier {
-    fn new(max_urls: usize, max_depth: Option<u32>) -> Self {
+    fn new(max_urls: usize, max_depth: Option<u32>, first_id: i64) -> Self {
         Frontier {
             pages: VecDeque::new(),
             resources: VecDeque::new(),
@@ -1251,25 +1316,52 @@ impl Frontier {
             counts: [0; 3],
             max_urls,
             max_depth,
+            next_id: first_id,
         }
+    }
+
+    fn budget(internal: bool, resource: bool) -> usize {
+        match (internal, resource) {
+            (true, false) => 0,
+            (true, true) => 1,
+            (false, _) => 2,
+        }
+    }
+
+    /// A URL a continued crawl wrote before: known, with its id, counted in
+    /// its budget whatever the limit, and not queued.
+    fn register(&mut self, url: String, id: i64, internal: bool, resource: bool, blocked: bool) -> usize {
+        if let Some(&index) = self.index.get(&url) {
+            return index;
+        }
+        self.counts[Self::budget(internal, resource)] += 1;
+        let index = self.known.len();
+        self.index.insert(url.clone(), index);
+        self.known.push(Known { url, id, saved: true, blocked, edges: Vec::new() });
+        index
+    }
+
+    /// Queues again a page `register` knew, to be requested under its id.
+    fn requeue(&mut self, index: usize, depth: u32) {
+        let Ok(url) = Url::parse(&self.known[index].url) else { return };
+        self.known[index].saved = false;
+        self.pages.push_back(Item { url, index, depth, internal: true, resource: false });
     }
 
     fn push(&mut self, url: Url, depth: u32, internal: bool, resource: bool, from: Option<usize>, edge: Edge) {
         let index = match self.index.get(url.as_str()) {
             Some(&index) => index,
             None => {
-                let budget = match (internal, resource) {
-                    (true, false) => 0,
-                    (true, true) => 1,
-                    (false, _) => 2,
-                };
+                let budget = Self::budget(internal, resource);
                 if self.counts[budget] >= self.max_urls || self.max_depth.is_some_and(|max| depth > max) {
                     return;
                 }
                 self.counts[budget] += 1;
                 let index = self.known.len();
                 self.index.insert(url.to_string(), index);
-                self.known.push(Known { url: url.to_string(), saved: false, blocked: false, edges: Vec::new() });
+                let id = self.next_id;
+                self.next_id += 1;
+                self.known.push(Known { url: url.to_string(), id, saved: false, blocked: false, edges: Vec::new() });
                 let item = Item { url, index, depth, internal, resource };
                 match budget {
                     0 => self.pages.push_back(item),
@@ -1435,6 +1527,132 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// A small site: 8 pages and a 404, three clicks deep.
+    fn tree() -> Vec<(&'static str, String)> {
+        let page = |links: &[&str]| {
+            let links: String = links.iter().map(|href| format!("<a href={href}>{href}</a>")).collect();
+            format!("<html><head><title>Page</title></head><body>{links}</body></html>")
+        };
+        vec![
+            ("/", page(&["/a", "/b", "/c"])),
+            ("/a", page(&["/a1", "/a2", "/"])),
+            ("/b", page(&["/b1", "/missing"])),
+            ("/c", page(&["/"])),
+            ("/a1", page(&["/deep"])),
+            ("/a2", page(&[])),
+            ("/b1", page(&["/a1"])),
+            ("/deep", page(&[])),
+        ]
+    }
+
+    fn slow_config(start: Url) -> CrawlConfig {
+        let mut config = CrawlConfig::new(start);
+        config.check_external = false;
+        config.check_resources = false;
+        // A request every 60 ms: the crawl is still going when it is cut.
+        config.http.max_rps = Some(16.0);
+        config
+    }
+
+    /// (path, depth, has facts) of every URL of the crawl, by path.
+    fn crawled(store: &Store, crawl_id: i64) -> Vec<(String, Option<u32>, bool)> {
+        let mut rows: Vec<(String, Option<u32>, bool)> = store
+            .connection()
+            .prepare(
+                "SELECT u.url, u.depth, EXISTS (SELECT 1 FROM facts f WHERE f.url_id = u.id)
+                 FROM urls u WHERE u.crawl_id = ?1",
+            )
+            .unwrap()
+            .query_map([crawl_id], |row| Ok((row.get::<_, String>(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        for row in &mut rows {
+            row.0 = Url::parse(&row.0).unwrap().path().to_string();
+        }
+        rows.sort();
+        rows
+    }
+
+    /// A crawl cut short, stopped or killed, and then continued ends as the
+    /// same crawl run at one go: the same URLs at the same depths, none of
+    /// them requested twice (but a page whose facts were lost).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_continued_crawl_ends_as_one_run_would() {
+        let temp = |name: &str| {
+            let path = std::env::temp_dir().join(format!("seo-crawl-{name}-{}.sqlite", std::process::id()));
+            let _ = std::fs::remove_file(&path);
+            path
+        };
+        let (start, _) = site(tree()).await;
+        let whole_path = temp("whole");
+        let (whole, summary) = crawl(slow_config(start), Store::open(&whole_path).unwrap()).await.unwrap();
+        let expected = crawled(&whole, summary.crawl_id);
+        assert_eq!(expected.len(), 9);
+
+        // Stopped once three URLs are in, then continued.
+        let (start, requests) = site(tree()).await;
+        let path = temp("stopped");
+        let stop = Arc::new(AtomicBool::new(false));
+        let (progress, mut seen) = tokio::sync::watch::channel(CrawlProgress::default());
+        let control = CrawlControl { stop: stop.clone(), progress: Some(progress), ..Default::default() };
+        let first = tokio::spawn(crawl_with(slow_config(start.clone()), Store::open(&path).unwrap(), control));
+        while seen.borrow_and_update().urls < 3 {
+            seen.changed().await.unwrap();
+        }
+        stop.store(true, Ordering::SeqCst);
+        let (store, cut) = first.await.unwrap().unwrap();
+        assert!(cut.stopped && cut.urls < 9, "the crawl was cut: {} URLs", cut.urls);
+        let stopped: bool = store.connection().query_row("SELECT stopped FROM crawls", [], |row| row.get(0)).unwrap();
+        assert!(stopped);
+        let config: CrawlConfig = serde_json::from_str(&store.crawl_config(cut.crawl_id).unwrap()).unwrap();
+        let (store, done) = continue_with(config, store, cut.crawl_id, CrawlControl::default()).await.unwrap();
+        assert_eq!((done.crawl_id, done.urls, done.stopped), (cut.crawl_id, 9, false));
+        assert_eq!(crawled(&store, done.crawl_id), expected);
+        assert_eq!(requests.load(Ordering::SeqCst), 9, "no URL is requested twice");
+        let (finished, stopped): (Option<String>, bool) = store
+            .connection()
+            .query_row("SELECT finished_at, stopped FROM crawls", [], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap();
+        assert!(finished.is_some() && !stopped);
+        drop(store);
+
+        // Killed mid-crawl: nothing closes it, and the start page's facts
+        // are lost as if the run ended between its two writes.
+        let (start, requests) = site(tree()).await;
+        let path = temp("killed");
+        let (progress, mut seen) = tokio::sync::watch::channel(CrawlProgress::default());
+        let control = CrawlControl { progress: Some(progress), ..Default::default() };
+        let killed = tokio::spawn(crawl_with(slow_config(start.clone()), Store::open(&path).unwrap(), control));
+        while seen.borrow_and_update().urls < 3 {
+            seen.changed().await.unwrap();
+        }
+        let crawl_id = seen.borrow().crawl_id;
+        killed.abort();
+        let _ = killed.await;
+        // The writer thread applies what it was handed and lets go.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let store = Store::open(&path).unwrap();
+        let (written, finished): (usize, Option<String>) = store
+            .connection()
+            .query_row("SELECT (SELECT count(*) FROM urls), finished_at FROM crawls", [], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap();
+        assert!(written < 9 && finished.is_none(), "{written} URLs written, finished {finished:?}");
+        store
+            .connection()
+            .execute(&format!("DELETE FROM facts WHERE url_id = (SELECT id FROM urls WHERE url = '{start}')"), [])
+            .unwrap();
+        let config: CrawlConfig = serde_json::from_str(&store.crawl_config(crawl_id).unwrap()).unwrap();
+        let (store, done) = continue_with(config, store, crawl_id, CrawlControl::default()).await.unwrap();
+        assert_eq!(done.urls, 9);
+        assert_eq!(crawled(&store, crawl_id), expected);
+        assert_eq!(requests.load(Ordering::SeqCst), 10, "only the page without facts is requested again");
+        drop((store, whole));
+        for name in ["whole", "stopped", "killed"] {
+            let _ = std::fs::remove_file(temp(name));
+        }
+    }
+
     fn summary_start(store: &Store) -> String {
         store.connection().query_row("SELECT start_url FROM crawls", [], |row| row.get(0)).unwrap()
     }
@@ -1509,7 +1727,7 @@ mod tests {
 
     #[test]
     fn depths_follow_clicks_only() {
-        let mut frontier = Frontier::new(100, None);
+        let mut frontier = Frontier::new(100, None, 1);
         frontier.push(url("https://e.com/"), 0, true, false, None, Edge::Other);
         frontier.push(url("https://e.com/a"), 1, true, false, Some(0), Edge::Click);
         frontier.push(url("https://e.com/b"), 2, true, false, Some(1), Edge::Click);
@@ -1527,7 +1745,7 @@ mod tests {
 
     #[test]
     fn limits_stop_queueing() {
-        let mut frontier = Frontier::new(2, Some(1));
+        let mut frontier = Frontier::new(2, Some(1), 1);
         frontier.push(url("https://e.com/"), 0, true, false, None, Edge::Other);
         frontier.push(url("https://e.com/deep"), 2, true, false, Some(0), Edge::Click);
         frontier.push(url("https://e.com/a"), 1, true, false, Some(0), Edge::Click);
