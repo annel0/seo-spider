@@ -12,7 +12,7 @@ mod fetch;
 mod robots;
 mod writer;
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -96,7 +96,7 @@ pub async fn crawl_with(
     for change in config.resolve() {
         tracing::info!("setting turned on: {change}");
     }
-    let client = fetch::client(&fetch::ClientOptions {
+    let options = fetch::ClientOptions {
         user_agent: &config.http.user_agent,
         timeout: config.http.timeout(),
         connect_timeout: config.http.connect_timeout(),
@@ -106,7 +106,12 @@ pub async fn crawl_with(
         http2: config.http.http2,
         ca_certs: &config.http.ca_certs,
         accept_invalid_certs: config.http.accept_invalid_certs,
-    })?;
+    };
+    let client = fetch::client(&options)?;
+    // The extra headers are for the site: its cookies or credentials must
+    // not go to every host its pages link to.
+    let no_headers = BTreeMap::new();
+    let external_client = fetch::client(&fetch::ClientOptions { headers: &no_headers, ..options })?;
     let crawl_id = store.start_crawl(config.start_urls[0].as_str(), &serde_json::to_string(&config)?)?;
     let base_id = store.next_url_id()?;
     let writer = writer::Writer::spawn(store, crawl_id)?;
@@ -143,6 +148,7 @@ pub async fn crawl_with(
     let concurrency = config.http.concurrency.max(1);
     let ctx = Arc::new(Ctx {
         client: client.clone(),
+        external_client,
         render,
         reuse_documents: config.render.as_ref().is_some_and(|render| render.reuse_documents),
         http_slots: Semaphore::new(concurrency),
@@ -420,6 +426,8 @@ pub async fn crawl_with(
 
 struct Ctx {
     client: reqwest::Client,
+    /// The same without the extra headers, for other hosts.
+    external_client: reqwest::Client,
     render: Option<RenderPool>,
     /// Hand the renderer the document already downloaded.
     reuse_documents: bool,
@@ -708,7 +716,8 @@ async fn fetch_retrying(ctx: &Ctx, item: &Item, mode: fetch::BodyMode, timeout: 
                 pacer.pace().await;
             }
         }
-        let fetched = fetch::fetch(&ctx.client, &item.url, mode, timeout, ctx.head_for_status).await;
+        let client = if item.internal { &ctx.client } else { &ctx.external_client };
+        let fetched = fetch::fetch(client, &item.url, mode, timeout, ctx.head_for_status).await;
         match retry_delay(&fetched.http, item.internal, attempt) {
             Some(delay) if attempt < retries => {
                 tracing::debug!(url = %item.url, attempt, status = fetched.http.status, "retrying");
