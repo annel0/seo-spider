@@ -51,19 +51,44 @@ pub struct CrawlSummary {
     pub stopped: bool,
 }
 
-/// Crawls into `store` as `config` says, then hands the store back.
-pub async fn crawl(config: CrawlConfig, store: Store) -> Result<(Store, CrawlSummary)> {
-    crawl_until(config, store, Arc::new(AtomicBool::new(false))).await
+/// Where a running crawl is, as `CrawlControl::progress` reports it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CrawlProgress {
+    /// URLs recorded so far.
+    pub urls: usize,
+    pub pages: usize,
+    pub rendered: usize,
+    pub errors: usize,
+    /// URLs found and waiting for a request.
+    pub queued: usize,
+    pub in_flight: usize,
+    pub bytes: u64,
+    pub elapsed: Duration,
+    pub stopping: bool,
 }
 
-/// `crawl`, ending early once `stop` is set: no new requests start, the ones
-/// in flight finish and are stored, and the crawl is closed as usual (depths,
-/// states) so its checks and exports work on what it got.
-pub async fn crawl_until(
+/// What a caller holds on a running crawl: a switch that stops it and a
+/// channel with its progress (latest value only, a few times a second).
+#[derive(Default)]
+pub struct CrawlControl {
+    pub stop: Arc<AtomicBool>,
+    pub progress: Option<tokio::sync::watch::Sender<CrawlProgress>>,
+}
+
+/// Crawls into `store` as `config` says, then hands the store back.
+pub async fn crawl(config: CrawlConfig, store: Store) -> Result<(Store, CrawlSummary)> {
+    crawl_with(config, store, CrawlControl::default()).await
+}
+
+/// `crawl`, ending early once `control.stop` is set: no new requests start,
+/// the ones in flight finish and are stored, and the crawl is closed as
+/// usual (depths, states) so its checks and exports work on what it got.
+pub async fn crawl_with(
     mut config: CrawlConfig,
     store: Store,
-    stop: Arc<AtomicBool>,
+    control: CrawlControl,
 ) -> Result<(Store, CrawlSummary)> {
+    let CrawlControl { stop, progress } = control;
     let started = Instant::now();
     if config.start_urls.is_empty() {
         bail!("no start URL");
@@ -188,6 +213,7 @@ pub async fn crawl_until(
     // Which URL each task fetches, for a task that panics.
     let mut task_items: FxHashMap<tokio::task::Id, (usize, bool)> = FxHashMap::default();
     let mut last_progress = Instant::now();
+    let mut last_report = Instant::now();
     // Where the dispatcher's time goes: it is the one task every outcome
     // passes through.
     let (mut waiting, mut storing, mut discovering) = (Duration::ZERO, Duration::ZERO, Duration::ZERO);
@@ -288,7 +314,22 @@ pub async fn crawl_until(
             let stored = Instant::now();
             record(&writer, base_id, outcome, config.store.links, &mut frontier, &mut summary).await?;
             storing += stored.elapsed();
-            if last_progress.elapsed() >= Duration::from_secs(2) {
+            if let Some(progress) = progress.as_ref().filter(|_| last_report.elapsed() >= Duration::from_millis(250)) {
+                last_report = Instant::now();
+                progress.send_replace(CrawlProgress {
+                    urls: summary.urls,
+                    pages: summary.pages,
+                    rendered: summary.rendered,
+                    errors: summary.errors,
+                    queued: frontier.queued(),
+                    in_flight: tasks.len(),
+                    bytes: summary.bytes,
+                    elapsed: started.elapsed(),
+                    stopping: summary.stopped,
+                });
+            }
+            // The log line stands in for progress nobody else reports.
+            if progress.is_none() && last_progress.elapsed() >= Duration::from_secs(2) {
                 last_progress = Instant::now();
                 tracing::info!(
                     done = summary.urls,
@@ -302,6 +343,19 @@ pub async fn crawl_until(
         Ok(())
     }
     .await;
+    if let Some(progress) = &progress {
+        progress.send_replace(CrawlProgress {
+            urls: summary.urls,
+            pages: summary.pages,
+            rendered: summary.rendered,
+            errors: summary.errors,
+            queued: 0,
+            in_flight: 0,
+            bytes: summary.bytes,
+            elapsed: started.elapsed(),
+            stopping: summary.stopped,
+        });
+    }
     let loop_done = Instant::now();
     let finished = writer.finish();
     // A writer that failed is why sending stopped; report its error first.

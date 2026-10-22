@@ -510,7 +510,25 @@ fn crawl(args: CrawlArgs) -> Result<()> {
             std::process::exit(130);
         }
     });
-    let (mut store, summary) = runtime.block_on(seo_crawl::crawl_until(config, store, stop))?;
+    // On a terminal, a progress line once a second.
+    let progress = std::io::IsTerminal::is_terminal(&std::io::stderr()).then(|| {
+        let (sender, mut receiver) = tokio::sync::watch::channel(seo_crawl::CrawlProgress::default());
+        runtime.spawn(async move {
+            while receiver.changed().await.is_ok() {
+                let now = receiver.borrow_and_update().clone();
+                eprint!(
+                    "\r{} URLs, {} pages, {} rendered, {} errors, {} queued, {} in flight, {:.0} s{}   ",
+                    now.urls, now.pages, now.rendered, now.errors, now.queued, now.in_flight,
+                    now.elapsed.as_secs_f64(), if now.stopping { ", stopping" } else { "" },
+                );
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            eprintln!();
+        });
+        sender
+    });
+    let control = seo_crawl::CrawlControl { stop, progress };
+    let (mut store, summary) = runtime.block_on(seo_crawl::crawl_with(config, store, control))?;
     eprintln!(
         "crawl {}{}: {} URLs, {} pages, {} rendered ({} render errors), {} errors, {} blocked by robots.txt, {:.1} MB read in {:.1} s ({:.0} URLs/s)",
         summary.crawl_id,
