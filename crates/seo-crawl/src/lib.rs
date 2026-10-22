@@ -126,21 +126,7 @@ pub async fn crawl_with(
             let mut render = settings.to_render_config();
             render.ca_certs = ca_bundle(&config.http.ca_certs)?;
             render.accept_invalid_certs = config.http.accept_invalid_certs;
-            // The site's cookies go into the renderer's jar for the start
-            // hosts (gazeta.ru and lenta.ru pass their Sber ID redirect on
-            // one); other headers go with every request, so credentials stay
-            // with the crawler: they would reach third-party hosts too.
-            for (name, value) in &config.http.headers {
-                if name.eq_ignore_ascii_case("cookie") {
-                    for start in &config.start_urls {
-                        for pair in value.split(';').map(str::trim).filter(|pair| !pair.is_empty()) {
-                            render.cookies.push((start.to_string(), pair.to_string()));
-                        }
-                    }
-                } else if !name.eq_ignore_ascii_case("authorization") && !name.eq_ignore_ascii_case("proxy-authorization") {
-                    render.headers.push((name.clone(), value.clone()));
-                }
-            }
+            (render.cookies, render.headers) = render_headers(&config.http.headers, &config.start_urls);
             Some(RenderPool::new(render))
         }
         None => None,
@@ -686,6 +672,28 @@ async fn process(ctx: Arc<Ctx>, item: Item) -> Outcome {
     outcome
 }
 
+type Pair = (String, String);
+
+/// The crawl's extra headers as the renderer takes them: the site's cookies
+/// go into its jar for the start hosts (gazeta.ru and lenta.ru pass their
+/// Sber ID redirect on one); other headers go with every request, so
+/// credentials stay with the crawler: they would reach third-party hosts.
+fn render_headers(headers: &BTreeMap<String, String>, start_urls: &[Url]) -> (Vec<Pair>, Vec<Pair>) {
+    let (mut cookies, mut sent) = (Vec::new(), Vec::new());
+    for (name, value) in headers {
+        if name.eq_ignore_ascii_case("cookie") {
+            for start in start_urls {
+                for pair in value.split(';').map(str::trim).filter(|pair| !pair.is_empty()) {
+                    cookies.push((start.to_string(), pair.to_string()));
+                }
+            }
+        } else if !name.eq_ignore_ascii_case("authorization") && !name.eq_ignore_ascii_case("proxy-authorization") {
+            sent.push((name.clone(), value.clone()));
+        }
+    }
+    (cookies, sent)
+}
+
 /// The renderer takes one PEM file of extra roots: several are joined into
 /// a temporary one.
 fn ca_bundle(paths: &[std::path::PathBuf]) -> anyhow::Result<Option<std::path::PathBuf>> {
@@ -1119,6 +1127,28 @@ mod tests {
 
     fn url(text: &str) -> Url {
         Url::parse(text).unwrap()
+    }
+
+    #[test]
+    fn render_gets_site_cookies_but_no_credentials() {
+        let headers: BTreeMap<String, String> = [
+            ("Cookie", "unity_pause_sso=1; theme=dark"),
+            ("Authorization", "Basic c2VjcmV0"),
+            ("X-Test", "yes"),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect();
+        let start = [url("https://www.gazeta.ru/")];
+        let (cookies, sent) = render_headers(&headers, &start);
+        assert_eq!(
+            cookies,
+            [
+                ("https://www.gazeta.ru/".to_string(), "unity_pause_sso=1".to_string()),
+                ("https://www.gazeta.ru/".to_string(), "theme=dark".to_string()),
+            ]
+        );
+        assert_eq!(sent, [("X-Test".to_string(), "yes".to_string())]);
     }
 
     #[test]
