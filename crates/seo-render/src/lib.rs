@@ -58,6 +58,17 @@ pub struct RenderConfig {
     /// `navigator.language` and the Accept-Language of the page's requests,
     /// such as "ru-RU"; obscura's en-US by default.
     pub locale: Option<String>,
+    /// Render the document the crawler already downloaded instead of
+    /// requesting it again: one request less per rendered page. That
+    /// document came with the crawler's user agent, not the renderer's.
+    pub reuse_documents: bool,
+}
+
+/// A document the crawler already has, for `RenderPool::render_document`.
+pub struct Document {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
 }
 
 impl Default for RenderConfig {
@@ -84,6 +95,7 @@ impl Default for RenderConfig {
             skip_fonts: true,
             timezone: None,
             locale: None,
+            reuse_documents: false,
         }
     }
 }
@@ -121,7 +133,29 @@ pub struct Rendered {
 
 struct Job {
     url: String,
+    document: Option<Document>,
     reply: oneshot::Sender<Rendered>,
+}
+
+/// Answers a render's request for its own document from what the crawler
+/// downloaded, once; everything else goes to the network.
+struct Prefetched(Arc<std::sync::Mutex<std::collections::HashMap<String, obscura_net::Response>>>);
+
+#[async_trait::async_trait]
+impl obscura_net::interceptor::RequestInterceptor for Prefetched {
+    async fn intercept(&self, request: &obscura_net::RequestInfo) -> obscura_net::interceptor::InterceptAction {
+        if request.method == "GET" && request.resource_type == obscura_net::ResourceType::Document {
+            let prefetched = self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(request.url.as_str());
+            if let Some(response) = prefetched {
+                return obscura_net::interceptor::InterceptAction::Fulfill(response);
+            }
+        }
+        obscura_net::interceptor::InterceptAction::Continue
+    }
+
+    fn documents_only(&self) -> bool {
+        true
+    }
 }
 
 /// A fixed set of render threads sharing one job queue.
@@ -178,8 +212,14 @@ impl RenderPool {
 
     /// Renders `url` on the next free worker.
     pub async fn render(&self, url: String) -> Rendered {
+        self.render_document(url, None).await
+    }
+
+    /// `render`, with the document already downloaded when the pool reuses
+    /// documents (`RenderConfig::reuse_documents`).
+    pub async fn render_document(&self, url: String, document: Option<Document>) -> Rendered {
         let (reply, rx) = oneshot::channel();
-        if self.jobs.send(Job { url: url.clone(), reply }).await.is_err() {
+        if self.jobs.send(Job { url: url.clone(), document, reply }).await.is_err() {
             return Rendered::failed(url, "render pool is closed".into(), Instant::now());
         }
         rx.await
@@ -211,6 +251,10 @@ fn spawn_worker(worker: usize, jobs: async_channel::Receiver<Job>, config: Rende
                 if let Some(locale) = &config.locale {
                     context.http_client.set_accept_language(&accept_language(locale)).await;
                 }
+                let prefetched = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+                if config.reuse_documents {
+                    *context.http_client.interceptor.write().await = Some(Box::new(Prefetched(prefetched.clone())));
+                }
                 let new_page = |worker: usize, context: &Arc<BrowserContext>| {
                     let mut page = new_page(worker, context);
                     page.set_locale_override(config.locale.clone());
@@ -223,7 +267,23 @@ fn spawn_worker(worker: usize, jobs: async_channel::Receiver<Job>, config: Rende
                         page = new_page(worker, &context);
                         rendered_on_page = 0;
                     }
+                    let document = job.document.filter(|_| config.reuse_documents).and_then(|document| {
+                        let url = url::Url::parse(&job.url).ok()?;
+                        Some(obscura_net::Response {
+                            url,
+                            status: document.status,
+                            headers: document.headers.into_iter().map(|(name, value)| (name.to_ascii_lowercase(), value)).collect(),
+                            body: document.body,
+                            redirected_from: Vec::new(),
+                        })
+                    });
+                    if let Some(document) = document {
+                        prefetched.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(job.url.clone(), document);
+                    }
                     let rendered = render(&mut page, &job.url, &config).await;
+                    // Not asked for (the page's URL normalised differently):
+                    // drop it rather than serve a later render.
+                    prefetched.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&job.url);
                     rendered_on_page += 1;
                     if rendered.error.is_some() {
                         // A failed or abandoned navigation can leave the page

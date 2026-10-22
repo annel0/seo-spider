@@ -94,6 +94,7 @@ pub async fn crawl_until(
     let ctx = Arc::new(Ctx {
         client: client.clone(),
         render,
+        reuse_documents: config.render.as_ref().is_some_and(|render| render.reuse_documents),
         http_slots: Semaphore::new(concurrency),
         external_slots: Semaphore::new(config.http.external_concurrency.max(1)),
         external_hosts: ExternalHosts::new(config.http.external_per_host),
@@ -341,6 +342,8 @@ pub async fn crawl_until(
 struct Ctx {
     client: reqwest::Client,
     render: Option<RenderPool>,
+    /// Hand the renderer the document already downloaded.
+    reuse_documents: bool,
     http_slots: Semaphore,
     external_slots: Semaphore,
     external_hosts: ExternalHosts,
@@ -559,6 +562,26 @@ async fn process(ctx: Arc<Ctx>, item: Item) -> Outcome {
     // in parallel across pages instead of on the dispatcher.
     let mut raw_body = None;
     let bytes_read = body.as_ref().map_or(0, |body| body.bytes.len() as u64);
+    let renderable = item.internal && http.is_html() && (200..300).contains(&http.status);
+    // Only a whole document stands in for the renderer's own request. The
+    // body is decoded already, so its transfer headers do not apply.
+    let downloaded = (ctx.reuse_documents
+        && ctx.render.is_some()
+        && renderable
+        && matches!(ctx.body, fetch::BodyMode::Full(_))
+        && http.error.is_none())
+    .then_some(body.as_ref())
+    .flatten()
+    .map(|body| seo_render::Document {
+        status: http.status,
+        headers: http
+            .headers
+            .iter()
+            .filter(|(name, _)| !name.eq_ignore_ascii_case("content-encoding") && !name.eq_ignore_ascii_case("content-length"))
+            .cloned()
+            .collect(),
+        body: body.bytes.clone(),
+    });
     let raw = body.map(|body| {
         let facts = seo_page::extract_with(&body.html, &item.url, Source::Raw, &ctx.raw_extract);
         if ctx.store.raw_html {
@@ -566,9 +589,8 @@ async fn process(ctx: Arc<Ctx>, item: Item) -> Outcome {
         }
         document(facts, ctx.store.compression_level)
     });
-    let renderable = item.internal && http.is_html() && (200..300).contains(&http.status);
     let rendered = match &ctx.render {
-        Some(pool) if renderable => Some(render_page(pool, &item.url, &ctx).await),
+        Some(pool) if renderable => Some(render_page(pool, &item.url, downloaded, &ctx).await),
         _ => None,
     };
     let mut outcome = Outcome { item, http, bytes_read, raw, raw_body, rendered, candidates: Vec::new() };
@@ -600,9 +622,14 @@ async fn fetch_retrying(ctx: &Ctx, item: &Item, mode: fetch::BodyMode, timeout: 
     }
 }
 
-async fn render_page(pool: &RenderPool, url: &Url, ctx: &Ctx) -> RenderedPage {
+async fn render_page(
+    pool: &RenderPool,
+    url: &Url,
+    downloaded: Option<seo_render::Document>,
+    ctx: &Ctx,
+) -> RenderedPage {
     let Rendered { final_url, error, html, dcl_ms, total_ms, settled, load_fired, resources, console_errors, .. } =
-        pool.render(url.to_string()).await;
+        pool.render_document(url.to_string(), downloaded).await;
     let (document, body) = if error.is_none() {
         let base = Url::parse(&final_url).unwrap_or_else(|_| url.clone());
         let facts = seo_page::extract_with(&html, &base, Source::Rendered, &ctx.extract);

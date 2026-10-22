@@ -303,6 +303,10 @@ pub struct RenderSettings {
     /// Accept-Language); also the crawl's Accept-Language unless a header
     /// sets one.
     pub locale: Option<String>,
+    /// Render the document the crawler downloaded instead of requesting it
+    /// again: one request less per rendered page, but the page is then the
+    /// one served to the crawler's user agent, not the renderer's.
+    pub reuse_documents: bool,
 }
 
 impl Default for RenderSettings {
@@ -325,6 +329,7 @@ impl Default for RenderSettings {
             layout_budget_ms: render.layout_budget.map(|budget| budget.as_millis() as u64),
             timezone: render.timezone,
             locale: render.locale,
+            reuse_documents: render.reuse_documents,
             intersection_full_viewport: render.intersection_full_viewport,
             skip_images: render.skip_images,
             skip_fonts: render.skip_fonts,
@@ -358,6 +363,7 @@ impl RenderSettings {
             layout_budget: self.layout_budget_ms.map(Duration::from_millis),
             timezone: self.timezone.clone(),
             locale: self.locale.clone(),
+            reuse_documents: self.reuse_documents,
             intersection_full_viewport: self.intersection_full_viewport,
             skip_images: self.skip_images,
             skip_fonts: self.skip_fonts,

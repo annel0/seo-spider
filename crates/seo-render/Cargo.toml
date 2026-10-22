@@ -7,6 +7,9 @@ license.workspace = true
 
 [dependencies]
 obscura-browser = { workspace = true }
+obscura-net = { workspace = true }
+async-trait = { workspace = true }
+url = { workspace = true }
 tokio = { workspace = true }
 async-channel = { workspace = true }
 serde = { workspace = true }

@@ -190,6 +190,10 @@ struct CrawlArgs {
     /// Language of rendered pages and the crawl's Accept-Language, such as ru-RU.
     #[arg(long)]
     locale: Option<String>,
+    /// Render the downloaded document instead of requesting it again (the
+    /// page is then the one served to the crawler's user agent).
+    #[arg(long)]
+    reuse_documents: bool,
     /// Measure IntersectionObserver targets for real instead of treating
     /// every target as visible (slower: needs layout).
     #[arg(long)]
@@ -451,6 +455,7 @@ fn crawl_config(args: &CrawlArgs) -> Result<CrawlConfig> {
         if args.locale.is_some() {
             render.locale = args.locale.clone();
         }
+        render.reuse_documents |= args.reuse_documents;
         // The renderer keeps obscura's browser user agent unless one is
         // given, so pages run the scripts a browser would get.
         if let Some(user_agent) = &args.user_agent {

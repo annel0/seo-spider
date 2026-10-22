@@ -27,6 +27,8 @@ seo-crawl = { path = "crates/seo-crawl" }
 # The obscura fork (annel0/obscura, branch fix/chrome-parity) checked out
 # next to this repository.
 obscura-browser = { path = "../obscura/crates/obscura-browser", features = ["render"] }
+obscura-net = { path = "../obscura/crates/obscura-net" }
+async-trait = "0.1"
 # Same version and features as obscura-net, so both share one build.
 reqwest = { version = "0.12", default-features = false, features = ["gzip", "brotli", "deflate", "rustls-tls", "http2", "cookies"] }
 texting_robots = "0.2"
