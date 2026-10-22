@@ -480,10 +480,36 @@ fn crawl(args: CrawlArgs) -> Result<()> {
     }
     let store = Store::open(&args.db)?;
     let runtime = tokio::runtime::Runtime::new()?;
-    let (mut store, summary) = runtime.block_on(seo_crawl::crawl(config, store))?;
+    // Ctrl-C or SIGTERM stops the crawl: what is in flight is finished and
+    // stored, and the checks run on what was crawled.
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    runtime.spawn({
+        let stop = stop.clone();
+        async move {
+            #[cfg(unix)]
+            let terminate = async {
+                match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                    Ok(mut signal) => signal.recv().await,
+                    Err(_) => std::future::pending().await,
+                }
+            };
+            #[cfg(not(unix))]
+            let terminate = std::future::pending::<Option<()>>();
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = terminate => {}
+            }
+            eprintln!("stopping: finishing the requests in flight (Ctrl-C again to quit now)");
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            let _ = tokio::signal::ctrl_c().await;
+            std::process::exit(130);
+        }
+    });
+    let (mut store, summary) = runtime.block_on(seo_crawl::crawl_until(config, store, stop))?;
     eprintln!(
-        "crawl {}: {} URLs, {} pages, {} rendered ({} render errors), {} errors, {} blocked by robots.txt, {:.1} MB read in {:.1} s ({:.0} URLs/s)",
+        "crawl {}{}: {} URLs, {} pages, {} rendered ({} render errors), {} errors, {} blocked by robots.txt, {:.1} MB read in {:.1} s ({:.0} URLs/s)",
         summary.crawl_id,
+        if summary.stopped { " (stopped)" } else { "" },
         summary.urls,
         summary.pages,
         summary.rendered,

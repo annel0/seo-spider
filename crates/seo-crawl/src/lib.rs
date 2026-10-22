@@ -13,6 +13,7 @@ mod robots;
 mod writer;
 
 use std::collections::{HashSet, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -46,10 +47,23 @@ pub struct CrawlSummary {
     /// Bytes of response bodies actually read (a status check reads none).
     pub bytes: u64,
     pub elapsed: Duration,
+    /// The crawl was asked to stop before its queue ran out.
+    pub stopped: bool,
 }
 
 /// Crawls into `store` as `config` says, then hands the store back.
-pub async fn crawl(mut config: CrawlConfig, store: Store) -> Result<(Store, CrawlSummary)> {
+pub async fn crawl(config: CrawlConfig, store: Store) -> Result<(Store, CrawlSummary)> {
+    crawl_until(config, store, Arc::new(AtomicBool::new(false))).await
+}
+
+/// `crawl`, ending early once `stop` is set: no new requests start, the ones
+/// in flight finish and are stored, and the crawl is closed as usual (depths,
+/// states) so its checks and exports work on what it got.
+pub async fn crawl_until(
+    mut config: CrawlConfig,
+    store: Store,
+    stop: Arc<AtomicBool>,
+) -> Result<(Store, CrawlSummary)> {
     let started = Instant::now();
     if config.start_urls.is_empty() {
         bail!("no start URL");
@@ -167,6 +181,7 @@ pub async fn crawl(mut config: CrawlConfig, store: Store) -> Result<(Store, Craw
         blocked_by_robots: 0,
         bytes: 0,
         elapsed: Duration::ZERO,
+        stopped: false,
     };
     let mut tasks = JoinSet::new();
     // Which URL each task fetches, for a task that panics.
@@ -178,6 +193,13 @@ pub async fn crawl(mut config: CrawlConfig, store: Store) -> Result<(Store, Craw
     let result: Result<()> = async {
         loop {
             loop {
+                if stop.load(Ordering::Relaxed) {
+                    if !summary.stopped {
+                        summary.stopped = true;
+                        tracing::info!(in_flight = tasks.len(), queued = frontier.queued(), "stopping");
+                    }
+                    break;
+                }
                 let item = if internal_in_flight < internal_cap {
                     frontier.next_internal()
                 } else {
