@@ -70,6 +70,8 @@ pub struct RenderConfig {
     /// PEM bundle of root certificates trusted besides the built-in ones
     /// (obscura reads it as SSL_CERT_FILE).
     pub ca_certs: Option<std::path::PathBuf>,
+    /// Accept any certificate.
+    pub accept_invalid_certs: bool,
     /// Cookies as (page URL, "name=value"), set in each thread's jar so the
     /// cookies a page sets join them.
     pub cookies: Vec<(String, String)>,
@@ -113,6 +115,7 @@ impl Default for RenderConfig {
             save_data: true,
             timezone: None,
             ca_certs: None,
+            accept_invalid_certs: false,
             cookies: Vec::new(),
             headers: Vec::new(),
             locale: None,
@@ -211,6 +214,7 @@ impl RenderPool {
             // V8 reads the zone from TZ when its first isolate starts.
             ("TZ", config.timezone.clone()),
             ("SSL_CERT_FILE", config.ca_certs.as_ref().map(|path| path.to_string_lossy().into_owned())),
+            ("OBSCURA_INSECURE_TLS", config.accept_invalid_certs.then(|| "1".to_string())),
             ("OBSCURA_INTERSECTION_FULL_VIEWPORT", config.intersection_full_viewport.then(|| "1".to_string())),
             ("OBSCURA_RENDER_SKIP_IMAGES", config.skip_images.then(|| "1".to_string())),
             ("OBSCURA_RENDER_SKIP_FONTS", config.skip_fonts.then(|| "1".to_string())),

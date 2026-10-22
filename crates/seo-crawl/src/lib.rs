@@ -125,6 +125,7 @@ pub async fn crawl_with(
         Some(settings) => {
             let mut render = settings.to_render_config();
             render.ca_certs = ca_bundle(&config.http.ca_certs)?;
+            render.accept_invalid_certs = config.http.accept_invalid_certs;
             // The site's cookies go into the renderer's jar for the start
             // hosts (gazeta.ru and lenta.ru pass their Sber ID redirect on
             // one); other headers go with every request, so credentials stay

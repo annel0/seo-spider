@@ -217,8 +217,7 @@ pub struct HttpConfig {
     /// Sites on a Russian Trusted Root CA certificate (tbank.ru) otherwise
     /// fail with UnknownIssuer, as in Chrome. The renderer trusts them too.
     pub ca_certs: Vec<std::path::PathBuf>,
-    /// Accept any certificate, expired or for another name included (the
-    /// crawler's requests only).
+    /// Accept any certificate, expired or for another name included.
     pub accept_invalid_certs: bool,
 }
 
@@ -403,6 +402,7 @@ impl RenderSettings {
             skip_fonts: self.skip_fonts,
             save_data: self.save_data,
             ca_certs: None,
+            accept_invalid_certs: false,
             cookies: Vec::new(),
             headers: Vec::new(),
         }

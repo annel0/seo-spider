@@ -67,8 +67,7 @@ again), `--max-rps`, robots.txt `Crawl-delay`, `--retries`, `--http2`
 (on in the `minimal` preset, where it is several times faster). TLS:
 `--ca-cert file.pem` trusts more root certificates (sites on the Russian
 Trusted Root CA, such as tbank.ru, fail with UnknownIssuer otherwise),
-`--insecure` accepts any certificate (the crawler's requests only; the
-renderer trusts `--ca-cert` too). `--header` goes to rendering as well:
+`--insecure` accepts any certificate; both apply to rendering too. `--header` goes to rendering as well:
 cookies into the renderer's jar for the start hosts, other headers with
 every request, except Authorization, which would reach third parties.
 gazeta.ru and lenta.ru send a crawler to a Sber ID page without
