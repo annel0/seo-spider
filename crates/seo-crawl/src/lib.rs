@@ -65,14 +65,21 @@ pub struct CrawlProgress {
     pub bytes: u64,
     pub elapsed: Duration,
     pub stopping: bool,
+    /// Paused: no request starts until `pause` is cleared.
+    pub paused: bool,
 }
 
-/// What a caller holds on a running crawl: a switch that stops it and a
-/// channel with its progress (latest value only, a few times a second).
+/// What a caller holds on a running crawl: switches that stop and pause it,
+/// a channel with its progress (latest value only, a few times a second),
+/// and whether each page's issues are found and stored as it is crawled
+/// (for a live view; the checks after the crawl replace them).
 #[derive(Default)]
 pub struct CrawlControl {
     pub stop: Arc<AtomicBool>,
+    /// While set, no request starts; those in flight finish.
+    pub pause: Arc<AtomicBool>,
     pub progress: Option<tokio::sync::watch::Sender<CrawlProgress>>,
+    pub live_issues: bool,
 }
 
 /// Crawls into `store` as `config` says, then hands the store back.
@@ -88,7 +95,7 @@ pub async fn crawl_with(
     store: Store,
     control: CrawlControl,
 ) -> Result<(Store, CrawlSummary)> {
-    let CrawlControl { stop, progress } = control;
+    let CrawlControl { stop, pause, progress, live_issues } = control;
     let started = Instant::now();
     if config.start_urls.is_empty() {
         bail!("no start URL");
@@ -158,6 +165,8 @@ pub async fn crawl_with(
         },
         head_for_status: config.http.head_for_status,
         stop: stop.clone(),
+        live_issues,
+        in_sitemap: std::sync::OnceLock::new(),
         retries: config.http.retries,
         body: match config.fetch {
             FetchLevel::Status => fetch::BodyMode::None,
@@ -216,6 +225,9 @@ pub async fn crawl_with(
         sitemaps.dedup();
         in_sitemap = robots::sitemap_urls(&client, sitemaps, config.max_urls).await;
         tracing::info!(urls = in_sitemap.len(), "sitemaps read");
+        if live_issues {
+            let _ = ctx.in_sitemap.set(in_sitemap.clone());
+        }
         for listed in &in_sitemap {
             let Some(url) = Url::parse(listed).ok().and_then(|url| rules.filters.normalize(url)) else { continue };
             if rules.scope.internal(&url) && rules.filters.allows(&url, true) {
@@ -252,6 +264,9 @@ pub async fn crawl_with(
                         summary.stopped = true;
                         tracing::info!(in_flight = tasks.len(), queued = frontier.queued(), "stopping");
                     }
+                    break;
+                }
+                if pause.load(Ordering::Relaxed) {
                     break;
                 }
                 let item = if internal_in_flight < internal_cap {
@@ -294,6 +309,26 @@ pub async fn crawl_with(
                 let task_item = (item.index, item.internal);
                 let task = tasks.spawn(process(ctx.clone(), item));
                 task_items.insert(task.id(), task_item);
+            }
+            // Paused with nothing in flight: wait for resume or stop instead
+            // of taking the empty task set for the end of the crawl.
+            if tasks.is_empty() && pause.load(Ordering::Relaxed) && !stop.load(Ordering::Relaxed) {
+                if let Some(progress) = &progress {
+                    progress.send_replace(CrawlProgress {
+                        urls: summary.urls,
+                        pages: summary.pages,
+                        rendered: summary.rendered,
+                        errors: summary.errors,
+                        queued: frontier.queued(),
+                        in_flight: 0,
+                        bytes: summary.bytes,
+                        elapsed: started.elapsed(),
+                        stopping: false,
+                        paused: true,
+                    });
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
             }
             let waited = Instant::now();
             let Some(joined) = tasks.join_next_with_id().await else { break };
@@ -356,6 +391,7 @@ pub async fn crawl_with(
                     bytes: summary.bytes,
                     elapsed: started.elapsed(),
                     stopping: summary.stopped,
+                    paused: pause.load(Ordering::Relaxed),
                 });
             }
             // The log line stands in for progress nobody else reports.
@@ -384,6 +420,7 @@ pub async fn crawl_with(
             bytes: summary.bytes,
             elapsed: started.elapsed(),
             stopping: summary.stopped,
+            paused: false,
         });
     }
     let loop_done = Instant::now();
@@ -440,6 +477,10 @@ struct Ctx {
     /// Set once the crawl is to stop: requests still waiting their turn
     /// are not sent.
     stop: Arc<AtomicBool>,
+    /// Find each page's issues as it is crawled.
+    live_issues: bool,
+    /// The sitemap URLs, for the live checks; set once the sitemaps are read.
+    in_sitemap: std::sync::OnceLock<HashSet<String>>,
     /// Extra attempts for a request that failed in a way worth retrying.
     retries: u32,
     /// What is read from the raw document: everything asked for when it is
@@ -647,6 +688,8 @@ struct Outcome {
     /// The crawl stopped before the request was sent: the URL stays
     /// unrequested, as the queued ones do.
     unsent: bool,
+    /// The page's issues, when the crawl finds them as it goes.
+    issues: Vec<(&'static str, Option<String>)>,
 }
 
 impl Outcome {
@@ -660,6 +703,7 @@ impl Outcome {
             rendered: None,
             candidates: Vec::new(),
             unsent: true,
+            issues: Vec::new(),
         }
     }
 }
@@ -769,9 +813,42 @@ async fn process(ctx: Arc<Ctx>, item: Item) -> Outcome {
         Some(pool) if renderable => Some(render_page(pool, &item.url, downloaded, &ctx).await),
         _ => None,
     };
-    let mut outcome = Outcome { item, http, bytes_read, raw, raw_body, rendered, candidates: Vec::new(), unsent: false };
+    let mut outcome =
+        Outcome { item, http, bytes_read, raw, raw_body, rendered, candidates: Vec::new(), unsent: false, issues: Vec::new() };
     outcome.candidates = discover(&outcome, &ctx.rules);
+    if ctx.live_issues && outcome.item.internal {
+        outcome.issues = live_issues(&outcome, &ctx);
+    }
     outcome
+}
+
+/// A page's issues as `check_page` finds them from this page alone, for a
+/// live view; the checks after the crawl, which see every page, replace them.
+fn live_issues(outcome: &Outcome, ctx: &Ctx) -> Vec<(&'static str, Option<String>)> {
+    let raw = outcome.raw.as_ref().map(|document| &document.facts);
+    let rendered = outcome.rendered.as_ref().and_then(|page| page.document.as_ref()).map(|document| &document.facts);
+    let render = outcome.rendered.as_ref().map(|page| {
+        let record = &page.record;
+        seo_store::render_summary(record.error.clone(), record.settled, &record.console_errors_json, &record.resources_json)
+    });
+    let facts = rendered.or(raw);
+    let input = seo_checks::PageInput {
+        url: &outcome.item.url,
+        http: &outcome.http,
+        facts,
+        raw,
+        rendered,
+        render: render.as_ref(),
+        depth: outcome.item.depth,
+        in_sitemap: ctx.in_sitemap.get().is_some_and(|listed| listed.contains(outcome.item.url.as_str())),
+        blocked_by_robots: false,
+    };
+    let extracted = facts.map_or_else(ExtractOptions::default, |facts| facts.extracted);
+    seo_checks::check_page(&input)
+        .into_iter()
+        .filter(|issue| audit::meaningful(issue.code, &extracted))
+        .map(|issue| (issue.code, issue.detail))
+        .collect()
 }
 
 type Pair = (String, String);
@@ -928,7 +1005,7 @@ async fn record(
     frontier: &mut Frontier,
     summary: &mut CrawlSummary,
 ) -> Result<()> {
-    let Outcome { item, http, bytes_read, raw, raw_body, rendered, .. } = outcome;
+    let Outcome { item, http, bytes_read, raw, raw_body, rendered, issues, .. } = outcome;
     let url_id = base_id + item.index as i64;
     frontier.known[item.index].saved = true;
     summary.urls += 1;
@@ -937,6 +1014,9 @@ async fn record(
     }
     summary.bytes += bytes_read;
     writer.send(Write::Response { id: url_id, http, internal: item.internal }).await?;
+    if !issues.is_empty() {
+        writer.send(Write::Issues { url_id, issues }).await?;
+    }
     if let Some(Document { facts, data }) = raw {
         summary.pages += 1;
         writer.send(Write::Facts { url_id, facts: Box::new(facts), data, links }).await?;
@@ -1257,6 +1337,100 @@ impl Frontier {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serves `pages` by path over HTTP/1.1 (404 for anything else) and
+    /// counts the page requests (robots.txt aside).
+    async fn site(pages: Vec<(&'static str, String)>) -> (Url, Arc<std::sync::atomic::AtomicUsize>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = requests.clone();
+        let pages = Arc::new(pages);
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let (pages, counted) = (pages.clone(), counted.clone());
+                tokio::spawn(async move {
+                    let mut request = Vec::new();
+                    let mut buffer = [0u8; 4096];
+                    loop {
+                        let Ok(read) = socket.read(&mut buffer).await else { return };
+                        if read == 0 {
+                            return;
+                        }
+                        request.extend_from_slice(&buffer[..read]);
+                        let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n") else { continue };
+                        let head = String::from_utf8_lossy(&request[..end]).to_string();
+                        request.drain(..end + 4);
+                        let path = head.split_whitespace().nth(1).unwrap_or("/").to_string();
+                        if path != "/robots.txt" {
+                            counted.fetch_add(1, Ordering::SeqCst);
+                        }
+                        let (status, body) = match pages.iter().find(|(have, _)| *have == path) {
+                            Some((_, body)) => ("200 OK", body.clone()),
+                            None => ("404 Not Found", "<html><body>404</body></html>".to_string()),
+                        };
+                        let reply = format!(
+                            "HTTP/1.1 {status}\r\ncontent-type: text/html\r\ncontent-length: {}\r\n\r\n{body}",
+                            body.len()
+                        );
+                        if socket.write_all(reply.as_bytes()).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        (url, requests)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_paused_crawl_waits_and_live_issues_are_stored() {
+        let page = |title: &str, links: &str| {
+            format!("<html lang=en><head><title>{title}</title></head><body><h1>{title}</h1>{links}</body></html>")
+        };
+        let (start, requests) = site(vec![
+            ("/", page("Home page of the test", "<a href=/a>a</a><a href=/b>b</a>")),
+            ("/a", page("Page a of the test site", "<a href=/>home</a>")),
+            ("/b", "<html><body><a href=/>home</a></body></html>".to_string()),
+        ])
+        .await;
+        let path = std::env::temp_dir().join(format!("seo-crawl-pause-{}.sqlite", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let store = Store::open(&path).unwrap();
+        let mut config = CrawlConfig::new(start);
+        config.check_external = false;
+        config.check_resources = false;
+        let pause = Arc::new(AtomicBool::new(true));
+        let (progress, mut seen) = tokio::sync::watch::channel(CrawlProgress::default());
+        let control =
+            CrawlControl { stop: Arc::default(), pause: pause.clone(), progress: Some(progress), live_issues: true };
+        let crawl = tokio::spawn(crawl_with(config, store, control));
+        while !seen.borrow_and_update().paused {
+            seen.changed().await.unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(requests.load(Ordering::SeqCst), 0, "nothing is requested while paused");
+        assert_eq!(seen.borrow().urls, 0);
+        pause.store(false, Ordering::SeqCst);
+        let (store, summary) = crawl.await.unwrap().unwrap();
+        assert_eq!(summary.urls, 3);
+        let missing: Vec<String> = store
+            .connection()
+            .prepare("SELECT u.url FROM issues i JOIN urls u ON u.id = i.url_id WHERE i.code = 'title_missing'")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(missing, [format!("{}b", summary_start(&store))]);
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    fn summary_start(store: &Store) -> String {
+        store.connection().query_row("SELECT start_url FROM crawls", [], |row| row.get(0)).unwrap()
+    }
 
     fn url(text: &str) -> Url {
         Url::parse(text).unwrap()

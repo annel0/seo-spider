@@ -17,7 +17,7 @@ const CHUNK: usize = 2048;
 /// Whether a check's finding means anything given what was extracted: a
 /// crawl that read only `<head>` has no links, headings or text, and their
 /// checks would flag every page.
-fn meaningful(code: &str, extracted: &ExtractOptions) -> bool {
+pub(crate) fn meaningful(code: &str, extracted: &ExtractOptions) -> bool {
     match code {
         "too_many_links" | "internal_nofollow_links" | "external_follow_links" | "links_to_http" | "dead_end"
         | "localhost_links" | "nofollow_to_indexable" | "incoming_follow_and_nofollow"

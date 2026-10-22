@@ -622,7 +622,7 @@ fn crawl(args: CrawlArgs) -> Result<()> {
         });
         sender
     });
-    let control = seo_crawl::CrawlControl { stop, progress };
+    let control = seo_crawl::CrawlControl { stop, progress, ..Default::default() };
     let (mut store, summary) = runtime.block_on(seo_crawl::crawl_with(config, store, control))?;
     eprintln!(
         "crawl {}{}: {} URLs, {} pages, {} rendered ({} render errors), {} errors, {} blocked by robots.txt, {:.1} MB read in {:.1} s ({:.0} URLs/s)",

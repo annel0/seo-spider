@@ -183,7 +183,7 @@ impl EncodedUrl {
 /// A stored render record as the checks read it. A request failed when it
 /// got an error status, or no response for a reason other than a block (a
 /// tracker the crawl chose not to load is not the page's failure).
-fn render_summary(error: Option<String>, settled: bool, console: &str, resources: &str) -> RenderSummary {
+pub fn render_summary(error: Option<String>, settled: bool, console: &str, resources: &str) -> RenderSummary {
     let console: Vec<String> = serde_json::from_str(console).unwrap_or_default();
     let resources: Vec<serde_json::Value> = serde_json::from_str(resources).unwrap_or_default();
     let failed: Vec<&serde_json::Value> = resources
@@ -255,12 +255,27 @@ pub enum Write {
     Render { url_id: i64, render: Box<RenderRecord> },
     /// A whole document; `encoding` is `identity` or `zstd`.
     Body { url_id: i64, kind: BodyKind, encoding: &'static str, size: usize, data: Vec<u8> },
+    /// A page's issues found while the crawl runs, for a live view; the
+    /// checks after the crawl replace them all.
+    Issues { url_id: i64, issues: Vec<(&'static str, Option<String>)> },
 }
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
         conn.execute_batch(SCHEMA).context("create schema")?;
+        Ok(Store { conn })
+    }
+
+    /// Opens a crawl file for reading only, alongside a crawl writing to
+    /// it (WAL lets readers in while the writer commits).
+    pub fn open_read(path: &Path) -> Result<Self> {
+        let conn = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .with_context(|| format!("open {} for reading", path.display()))?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         Ok(Store { conn })
     }
 
@@ -338,6 +353,8 @@ impl Store {
             let mut body_row = tx.prepare_cached(
                 "INSERT OR REPLACE INTO bodies (url_id, kind, encoding, size, data) VALUES (?1, ?2, ?3, ?4, ?5)",
             )?;
+            let mut issue_row =
+                tx.prepare_cached("INSERT INTO issues (crawl_id, url_id, code, detail) VALUES (?1, ?2, ?3, ?4)")?;
             for write in writes {
                 match write {
                     Write::Response { id, http, internal } => {
@@ -401,6 +418,11 @@ impl Store {
                     }
                     Write::Body { url_id, kind, encoding, size, data } => {
                         body_row.execute(params![url_id, kind.as_str(), encoding, *size as i64, data])?;
+                    }
+                    Write::Issues { url_id, issues } => {
+                        for (code, detail) in issues {
+                            issue_row.execute(params![crawl_id, url_id, code, detail])?;
+                        }
                     }
                 }
             }
