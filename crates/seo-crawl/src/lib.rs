@@ -116,7 +116,14 @@ pub async fn crawl_with(
         robots.load(&client, start).await;
     }
 
-    let render = config.render.as_ref().map(|settings| RenderPool::new(settings.to_render_config()));
+    let render = match &config.render {
+        Some(settings) => {
+            let mut render = settings.to_render_config();
+            render.ca_certs = ca_bundle(&config.http.ca_certs)?;
+            Some(RenderPool::new(render))
+        }
+        None => None,
+    };
     let render_threads = config.render.as_ref().map_or(0, |settings| settings.threads);
     let concurrency = config.http.concurrency.max(1);
     let ctx = Arc::new(Ctx {
@@ -653,6 +660,25 @@ async fn process(ctx: Arc<Ctx>, item: Item) -> Outcome {
     let mut outcome = Outcome { item, http, bytes_read, raw, raw_body, rendered, candidates: Vec::new() };
     outcome.candidates = discover(&outcome, &ctx.rules);
     outcome
+}
+
+/// The renderer takes one PEM file of extra roots: several are joined into
+/// a temporary one.
+fn ca_bundle(paths: &[std::path::PathBuf]) -> anyhow::Result<Option<std::path::PathBuf>> {
+    match paths {
+        [] => Ok(None),
+        [path] => Ok(Some(path.clone())),
+        paths => {
+            let mut pem = Vec::new();
+            for path in paths {
+                pem.extend(std::fs::read(path)?);
+                pem.push(b'\n');
+            }
+            let bundle = std::env::temp_dir().join(format!("seo-spider-ca-{}.pem", std::process::id()));
+            std::fs::write(&bundle, pem)?;
+            Ok(Some(bundle))
+        }
+    }
 }
 
 /// Requests the item, again while the failure is one worth retrying.

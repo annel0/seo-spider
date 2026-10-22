@@ -215,10 +215,10 @@ pub struct HttpConfig {
     pub http2: bool,
     /// PEM files of root certificates trusted besides the built-in ones.
     /// Sites on a Russian Trusted Root CA certificate (tbank.ru) otherwise
-    /// fail with UnknownIssuer, as in Chrome. Applies to the crawler's own
-    /// requests, not the renderer's.
+    /// fail with UnknownIssuer, as in Chrome. The renderer trusts them too.
     pub ca_certs: Vec<std::path::PathBuf>,
-    /// Accept any certificate, expired or for another name included.
+    /// Accept any certificate, expired or for another name included (the
+    /// crawler's requests only).
     pub accept_invalid_certs: bool,
 }
 
@@ -398,6 +398,7 @@ impl RenderSettings {
             intersection_full_viewport: self.intersection_full_viewport,
             skip_images: self.skip_images,
             skip_fonts: self.skip_fonts,
+            ca_certs: None,
         }
     }
 }

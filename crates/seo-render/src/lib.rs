@@ -62,6 +62,9 @@ pub struct RenderConfig {
     /// requesting it again: one request less per rendered page. That
     /// document came with the crawler's user agent, not the renderer's.
     pub reuse_documents: bool,
+    /// PEM bundle of root certificates trusted besides the built-in ones
+    /// (obscura reads it as SSL_CERT_FILE).
+    pub ca_certs: Option<std::path::PathBuf>,
 }
 
 /// A document the crawler already has, for `RenderPool::render_document`.
@@ -98,6 +101,7 @@ impl Default for RenderConfig {
             skip_images: true,
             skip_fonts: true,
             timezone: None,
+            ca_certs: None,
             locale: None,
             reuse_documents: false,
         }
@@ -193,6 +197,7 @@ impl RenderPool {
             ("OBSCURA_LAYOUT_BUDGET_MS", config.layout_budget.map(|budget| budget.as_millis().to_string())),
             // V8 reads the zone from TZ when its first isolate starts.
             ("TZ", config.timezone.clone()),
+            ("SSL_CERT_FILE", config.ca_certs.as_ref().map(|path| path.to_string_lossy().into_owned())),
             ("OBSCURA_INTERSECTION_FULL_VIEWPORT", config.intersection_full_viewport.then(|| "1".to_string())),
             ("OBSCURA_RENDER_SKIP_IMAGES", config.skip_images.then(|| "1".to_string())),
             ("OBSCURA_RENDER_SKIP_FONTS", config.skip_fonts.then(|| "1".to_string())),
