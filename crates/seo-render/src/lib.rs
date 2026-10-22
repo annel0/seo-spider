@@ -55,7 +55,9 @@ impl Default for RenderConfig {
             // Rendering waits on the network as much as it computes: one
             // thread per core, within reason for memory (~70 MB each).
             threads: std::thread::available_parallelism().map_or(4, |cores| cores.get()).clamp(2, 16),
-            settle: SettlePolicy::default(),
+            // A page whose spinners and carousels never stop animating
+            // settles once its content has been still for a second.
+            settle: SettlePolicy { content_quiet: Some(Duration::from_secs(1)), ..SettlePolicy::default() },
             navigation_timeout: Duration::from_secs(30),
             user_agent: None,
             recycle_after: 200,

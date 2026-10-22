@@ -164,6 +164,10 @@ struct CrawlArgs {
     /// DOM quiet period that counts as settled, ms.
     #[arg(long)]
     settle_quiet_ms: Option<u64>,
+    /// Settle once the content has been still this long while animations
+    /// still run, ms (0: wait for all DOM activity to stop).
+    #[arg(long)]
+    settle_content_quiet_ms: Option<u64>,
     /// Stall limit for third-party requests while rendering, ms (0: obscura's own).
     #[arg(long)]
     third_party_timeout_ms: Option<u64>,
@@ -407,6 +411,9 @@ fn crawl_config(args: &CrawlArgs) -> Result<CrawlConfig> {
         }
         if let Some(quiet) = args.settle_quiet_ms {
             render.settle_quiet_ms = quiet;
+        }
+        if let Some(still) = args.settle_content_quiet_ms {
+            render.settle_content_quiet_ms = still;
         }
         match args.third_party_timeout_ms {
             Some(0) => render.third_party_timeout_ms = None,

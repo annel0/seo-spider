@@ -259,6 +259,10 @@ pub struct RenderSettings {
     pub settle_quiet_after_load_ms: u64,
     /// How long third-party requests in flight hold the snapshot.
     pub settle_grace_ms: u64,
+    /// Settle once the content (nodes, text, links) has been still this
+    /// long, while animations still write styles; 0 waits for all DOM
+    /// activity to stop.
+    pub settle_content_quiet_ms: u64,
     pub navigation_timeout_ms: u64,
     /// The renderer keeps obscura's browser user agent unless one is given.
     pub user_agent: Option<String>,
@@ -293,6 +297,7 @@ impl Default for RenderSettings {
             settle_quiet_ms: render.settle.quiet.as_millis() as u64,
             settle_quiet_after_load_ms: render.settle.quiet_after_load.as_millis() as u64,
             settle_grace_ms: render.settle.grace.as_millis() as u64,
+            settle_content_quiet_ms: render.settle.content_quiet.map_or(0, |still| still.as_millis() as u64),
             navigation_timeout_ms: render.navigation_timeout.as_millis() as u64,
             user_agent: None,
             third_party_timeout_ms: render.third_party_timeout.map(|limit| limit.as_millis() as u64),
@@ -318,6 +323,8 @@ impl RenderSettings {
                 quiet: Duration::from_millis(self.settle_quiet_ms),
                 quiet_after_load: Duration::from_millis(self.settle_quiet_after_load_ms),
                 grace: Duration::from_millis(self.settle_grace_ms),
+                content_quiet: (self.settle_content_quiet_ms > 0)
+                    .then(|| Duration::from_millis(self.settle_content_quiet_ms)),
             },
             navigation_timeout: Duration::from_millis(self.navigation_timeout_ms),
             user_agent: self.user_agent.clone(),

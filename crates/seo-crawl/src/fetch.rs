@@ -19,6 +19,14 @@ pub struct ClientOptions<'a> {
 
 pub fn client(options: &ClientOptions<'_>) -> anyhow::Result<Client> {
     let mut headers = reqwest::header::HeaderMap::new();
+    // What a browser asks for. Servers that negotiate by Accept answer `*/*`
+    // with something else: nextjs.org sends its llms.md as text/markdown.
+    headers.insert(
+        reqwest::header::ACCEPT,
+        reqwest::header::HeaderValue::from_static(
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        ),
+    );
     for (name, value) in options.headers {
         headers.insert(
             reqwest::header::HeaderName::from_bytes(name.as_bytes())?,
