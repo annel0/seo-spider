@@ -198,9 +198,9 @@ pub struct HttpConfig {
     /// Offer HTTP/2 to servers. A `fetch = "head"` crawl gains most: over
     /// HTTP/1.1 each read cut at `</head>` costs the connection (vuejs.org:
     /// 4.5 s -> 1.7 s). Off by default: a whole-document crawl checks
-    /// resources too, and some servers then stall the connection's other
-    /// streams after a response is dropped unread (the same site: 2.4 s ->
-    /// 21 s).
+    /// resources too, and some hosts answer a GET after a refused HEAD on
+    /// the same HTTP/2 connection only at the timeout (Vercel-hosted images
+    /// linked from vuejs.org: that crawl went from 2.4 s to 21 s).
     pub http2: bool,
 }
 
