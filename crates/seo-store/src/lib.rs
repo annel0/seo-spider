@@ -6,7 +6,7 @@ use std::path::Path;
 
 mod view;
 
-pub use view::{CrawlInfo, RowQuery, RowsPage, UrlRow, FILTERS};
+pub use view::{CrawlInfo, Overview, RowQuery, RowsPage, UrlRow, FILTERS};
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};

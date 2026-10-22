@@ -63,6 +63,7 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
         .route("/api/crawls/{id}/stop", post(stop_crawl))
         .route("/api/crawls/{id}/events", get(events))
         .route("/api/crawls/{id}/summary", get(summary))
+        .route("/api/crawls/{id}/overview", get(overview))
         .route("/api/crawls/{id}/rows", get(rows))
         .route("/api/urls/{id}", get(url_detail))
         .with_state(state);
@@ -337,6 +338,28 @@ async fn summary(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> Api
         filters: filters.into_iter().map(|(key, count)| FilterCount { key, count }).collect(),
         issues: issues.into_iter().map(|(code, count)| issue_info(code, count)).collect(),
     }))
+}
+
+/// The overview's charts: counts by group, and issues by severity.
+#[derive(Serialize)]
+struct OverviewReply {
+    #[serde(flatten)]
+    counts: seo_store::Overview,
+    /// URLs with an issue of each severity, and issues found in all.
+    severities: Vec<(&'static str, i64)>,
+}
+
+async fn overview(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> ApiResult<OverviewReply> {
+    let (counts, issues) = read(&state, move |store| Ok((store.overview(id)?, store.issue_counts(id)?))).await?;
+    let mut severities = vec![("high", 0), ("medium", 0), ("low", 0)];
+    for (code, count) in issues {
+        if let Some(check) = seo_checks::find(&code) {
+            if let Some(entry) = severities.iter_mut().find(|(name, _)| *name == check.severity.as_str()) {
+                entry.1 += count;
+            }
+        }
+    }
+    Ok(Json(OverviewReply { counts, severities }))
 }
 
 #[derive(Deserialize)]

@@ -48,6 +48,27 @@ pub struct UrlRow {
     pub issues: i64,
 }
 
+/// A crawl at a glance, for the overview's charts: counts by group.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Overview {
+    /// Internal URLs.
+    pub urls: i64,
+    /// Internal HTML documents.
+    pub pages: i64,
+    /// 2xx, 3xx, 4xx, 5xx, no_response, blocked.
+    pub statuses: Vec<(String, i64)>,
+    /// html, css, js, image, font, pdf, data, other, none.
+    pub content_types: Vec<(String, i64)>,
+    /// HTML pages by clicks from the start.
+    pub depths: Vec<(i64, i64)>,
+    /// Responses by time to first byte: upper bound in ms (0 for over 2 s).
+    pub response_times: Vec<(i64, i64)>,
+    /// HTML pages: indexable, noindex, canonicalised, redirect, error, blocked.
+    pub indexability: Vec<(String, i64)>,
+    pub average_ttfb_ms: f64,
+    pub bytes: i64,
+}
+
 /// What `url_rows` returns: the rows asked for and how many match.
 #[derive(Debug, Clone, Serialize)]
 pub struct RowsPage {
@@ -231,6 +252,86 @@ impl Store {
         .map_err(Into::into)
     }
 
+    /// Counts by group for the overview, over the crawl's internal URLs.
+    pub fn overview(&self, crawl_id: i64) -> Result<Overview> {
+        let html = "lower(u.content_type) LIKE 'text/html%'";
+        let grouped = |sql: &str| -> Result<Vec<(String, i64)>> {
+            let mut select = self.conn.prepare(sql)?;
+            let rows = select
+                .query_map(params![crawl_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            Ok(rows)
+        };
+        let numbered = |sql: &str| -> Result<Vec<(i64, i64)>> {
+            let mut select = self.conn.prepare(sql)?;
+            let rows = select
+                .query_map(params![crawl_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            Ok(rows)
+        };
+        let (urls, pages, average_ttfb_ms, bytes) = self.conn.query_row(
+            &format!(
+                "SELECT count(*), coalesce(sum({html}), 0), coalesce(avg(CASE WHEN status > 0 THEN ttfb_ms END), 0),
+                        coalesce(sum(size), 0)
+                 FROM urls u WHERE crawl_id = ?1 AND internal = 1"
+            ),
+            params![crawl_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        let statuses = grouped(
+            "SELECT CASE WHEN blocked_by_robots = 1 THEN 'blocked' WHEN status = 0 THEN 'no_response'
+                         ELSE (status / 100) || 'xx' END AS class, count(*)
+             FROM urls WHERE crawl_id = ?1 AND internal = 1 GROUP BY class ORDER BY class",
+        )?;
+        let content_types = grouped(
+            "SELECT CASE
+                 WHEN content_type IS NULL THEN 'none'
+                 WHEN lower(content_type) LIKE 'text/html%' OR lower(content_type) LIKE 'application/xhtml%' THEN 'html'
+                 WHEN lower(content_type) LIKE 'text/css%' THEN 'css'
+                 WHEN lower(content_type) LIKE '%javascript%' OR lower(content_type) LIKE '%ecmascript%' THEN 'js'
+                 WHEN lower(content_type) LIKE 'image/%' THEN 'image'
+                 WHEN lower(content_type) LIKE 'font/%' OR lower(content_type) LIKE '%font%' THEN 'font'
+                 WHEN lower(content_type) LIKE 'application/pdf%' THEN 'pdf'
+                 WHEN lower(content_type) LIKE '%json%' OR lower(content_type) LIKE '%xml%' THEN 'data'
+                 ELSE 'other' END AS kind, count(*)
+             FROM urls WHERE crawl_id = ?1 AND internal = 1 GROUP BY kind ORDER BY count(*) DESC",
+        )?;
+        let depths = numbered(&format!(
+            "SELECT coalesce(depth, -1) AS d, count(*) FROM urls u
+             WHERE crawl_id = ?1 AND internal = 1 AND {html} GROUP BY d ORDER BY d"
+        ))?;
+        let response_times = numbered(
+            "SELECT CASE WHEN ttfb_ms < 100 THEN 100 WHEN ttfb_ms < 300 THEN 300 WHEN ttfb_ms < 600 THEN 600
+                         WHEN ttfb_ms < 1000 THEN 1000 WHEN ttfb_ms < 2000 THEN 2000 ELSE 0 END AS bucket, count(*)
+             FROM urls WHERE crawl_id = ?1 AND internal = 1 AND status > 0 GROUP BY bucket",
+        )?;
+        let robots = "lower(coalesce(CASE WHEN fr.url_id IS NULL THEN fw.robots ELSE fr.robots END, ''))";
+        let canonical = "CASE WHEN fr.url_id IS NULL THEN fw.canonical ELSE fr.canonical END";
+        let indexability = grouped(&format!(
+            "SELECT CASE
+                 WHEN u.blocked_by_robots = 1 THEN 'blocked'
+                 WHEN u.status BETWEEN 300 AND 399 THEN 'redirect'
+                 WHEN u.status = 0 OR u.status >= 400 THEN 'error'
+                 WHEN {robots} LIKE '%noindex%' THEN 'noindex'
+                 WHEN coalesce({canonical}, '') NOT IN ('', u.url) THEN 'canonicalised'
+                 ELSE 'indexable' END AS state, count(*)
+             {ROWS_FROM} WHERE u.crawl_id = ?1 AND u.internal = 1
+               AND ({html} OR u.blocked_by_robots = 1 OR u.status = 0 OR u.status BETWEEN 300 AND 399)
+             GROUP BY state ORDER BY count(*) DESC"
+        ))?;
+        Ok(Overview {
+            urls,
+            pages,
+            statuses,
+            content_types,
+            depths,
+            response_times,
+            indexability,
+            average_ttfb_ms,
+            bytes,
+        })
+    }
+
     /// How many URLs have each issue code.
     pub fn issue_counts(&self, crawl_id: i64) -> Result<Vec<(String, i64)>> {
         let mut select = self.conn.prepare_cached(
@@ -333,6 +434,13 @@ mod tests {
         let counts = store.filter_counts(crawl).unwrap();
         assert!(counts.contains(&("all", 4)) && counts.contains(&("2xx", 3)) && counts.contains(&("4xx", 1)));
         assert_eq!(store.issue_counts(crawl).unwrap().len(), 2);
+        let overview = store.overview(crawl).unwrap();
+        assert_eq!((overview.urls, overview.pages), (4, 4));
+        assert!(overview.statuses.contains(&("2xx".into(), 3)) && overview.statuses.contains(&("4xx".into(), 1)));
+        assert_eq!(overview.depths, [(0, 1), (1, 1), (2, 1), (3, 1)]);
+        assert!(overview.indexability.contains(&("indexable".into(), 3)));
+        assert!(overview.indexability.contains(&("error".into(), 1)));
+        assert_eq!(overview.content_types, [("html".to_string(), 4)]);
         assert_eq!(store.url_issues(4).unwrap().len(), 2);
         assert!(store.url_rows(crawl, &query("nope", "url", false, None)).is_err());
         assert!(store.url_rows(crawl, &query("all", "url; DROP TABLE urls", false, None)).is_err());
