@@ -857,6 +857,80 @@ input::placeholder {
   width: 100%;
 }
 
+/* The auto mode's verdict: a strip over the overview, opening into the
+   pages it read both ways. */
+
+.decision {
+  background: var(--panel);
+  border-left: 4px solid var(--ok);
+  box-shadow: 0 1px 0 var(--rule);
+}
+
+.decision.on {
+  border-left-color: var(--accent);
+}
+
+.decision summary {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 44px;
+  padding: 0 16px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.decision summary::-webkit-details-marker {
+  display: none;
+}
+
+.decision .verdict {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--ok);
+}
+
+.decision.on .verdict {
+  color: var(--accent);
+}
+
+.decision .reason {
+  flex: 1;
+  min-width: 0;
+  color: var(--ink-2);
+}
+
+.decision .more {
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.decision .samples > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) 150px 150px minmax(0, 2fr);
+  gap: 14px;
+  padding: 6px 16px;
+  box-shadow: 0 -1px 0 var(--rule);
+}
+
+.decision .samples > div > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.decision .samples .head {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.decision .samples .changed > span:last-child {
+  color: var(--accent);
+}
+
 /* Issues: one ruled line each, a bar of how many URLs it hits. */
 
 .issue-group h3 {
@@ -955,6 +1029,19 @@ input::placeholder {
 }
 
 @media (max-width: 720px) {
+  .decision summary {
+    flex-wrap: wrap;
+    padding: 8px 16px;
+  }
+
+  .decision .samples > div {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .decision .samples .head {
+    display: none;
+  }
+
   .settings {
     grid-template-columns: minmax(0, 1fr);
   }

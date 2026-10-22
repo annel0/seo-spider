@@ -40,7 +40,7 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // The next crawl's settings: a preset, and what the form changed in it.
-  const [preset, setPreset] = useState("seo");
+  const [preset, setPreset] = useState("auto");
   const [patch, setPatch] = useState<JsonObject>({});
   const [schema, setSchema] = useState<Schema | null>(null);
   const [base, setBase] = useState<Json>(null);

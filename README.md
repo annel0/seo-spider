@@ -51,8 +51,21 @@ Settings come in layers: a preset, then a TOML file (`--config`), then flags.
 | `headers` | status and response headers (HEAD, no body) of the start URLs and sitemap URLs |
 | `minimal` | status, headers and `<head>` of the start URLs and sitemap URLs; nothing else requested |
 | `seo` (default) | whole raw HTML, links followed, resources and external links checked |
+| `auto` | `seo`, rendering only if JavaScript changes what the crawl reads (below); the UI's default |
 | `js` | `seo` plus rendering |
 | `dump` | `js` keeping the raw and rendered documents (`seo-spider bodies` writes them out) |
+
+The `auto` preset decides on rendering before the crawl: it reads the start
+page and a page of each section the start page links to (8 pages in all,
+`render.auto_pages`) both as the server sends them and rendered, and turns
+rendering on only if JavaScript changes their text (a fifth more words),
+links (any internal link no page has in its HTML), title, H1, description,
+canonical or noindex. The decision and the pages behind it are kept with
+the crawl's settings and shown in the UI. It takes a few seconds: 1 s on
+the test site, 8 to 13 s on real ones. fabrikabloknotov.ru: no rendering
+(10,364 -> 10,487 words, 1,581 -> 1,561 links on 7 pages); twitch.tv:
+rendering (0 -> 643 words on the home page); vuejs.org: rendering (its
+navigation menus, 11 links, exist only after JavaScript).
 
 How much is downloaded: `--fetch status|head|full` (head stops at `</head>`;
 `--head-drain-kb 512` reads and drops up to 512 KB more so the connection is

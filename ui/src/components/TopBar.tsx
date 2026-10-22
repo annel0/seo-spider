@@ -5,6 +5,7 @@ import { formatBytes, formatCount, formatDuration, stateLabels, statusColor, sta
 import { Icon } from "./Icon";
 
 const presetLabels: Record<string, string> = {
+  auto: "Авто",
   headers: "Заголовки",
   minimal: "Минимум",
   seo: "SEO",
@@ -13,6 +14,7 @@ const presetLabels: Record<string, string> = {
 };
 
 const stateColour: Record<string, string> = {
+  probing: "--info-soft",
   crawling: "--accent",
   paused: "--warn",
   stopping: "--warn",

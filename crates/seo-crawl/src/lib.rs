@@ -7,6 +7,7 @@
 //! crawled like any other, and the disk never holds up the network.
 
 mod audit;
+mod auto;
 mod config;
 mod fetch;
 mod resume;
@@ -29,6 +30,7 @@ use tokio::task::JoinSet;
 use url::Url;
 
 pub use audit::run_checks;
+pub use auto::{RenderDecision, Sample};
 pub use config::{is_private_host, CrawlConfig, FetchLevel, HttpConfig, RenderSettings, StoreOptions};
 pub use seo_page::ExtractOptions;
 pub use seo_render::{RenderConfig, SettlePolicy};
@@ -70,6 +72,8 @@ pub struct CrawlProgress {
     pub stopping: bool,
     /// Paused: no request starts until `pause` is cleared.
     pub paused: bool,
+    /// The auto mode is reading pages both ways before the crawl.
+    pub probing: bool,
 }
 
 /// What a caller holds on a running crawl: switches that stop and pause it,
@@ -101,6 +105,7 @@ fn progress_of(summary: &CrawlSummary, queued: usize, in_flight: usize, started:
         elapsed: started.elapsed(),
         stopping: summary.stopped,
         paused,
+        probing: false,
     }
 }
 
@@ -197,6 +202,44 @@ async fn run(mut config: CrawlConfig, store: Store, control: CrawlControl, resum
         stopped: false,
     };
 
+    // The render pool comes first: the auto mode reads pages with it.
+    let mut render = match &config.render {
+        Some(settings) => {
+            let mut render = settings.to_render_config();
+            render.ca_certs = ca_bundle(&config.http.ca_certs)?;
+            render.accept_invalid_certs = config.http.accept_invalid_certs;
+            (render.cookies, render.headers) = render_headers(&config.http.headers, &config.start_urls);
+            Some(RenderPool::new(render))
+        }
+        None => None,
+    };
+    // The auto mode decides once per crawl, before it; a continued crawl
+    // finds the decision in its settings.
+    let auto_pages = config
+        .render
+        .as_ref()
+        .filter(|settings| settings.auto && config.render_decision.is_none())
+        .map(|settings| settings.auto_pages.max(1));
+    if let (Some(pages), Some(pool)) = (auto_pages, render.as_ref()) {
+        if let Some(progress) = &progress {
+            progress.send_replace(CrawlProgress { crawl_id, probing: true, ..CrawlProgress::default() });
+        }
+        let probed = Instant::now();
+        let decision = auto::probe(&client, pool, &rules, &robots, &config, pages).await;
+        tracing::info!(render = decision.render, reason = %decision.reason, seconds = probed.elapsed().as_secs_f64(), "auto mode");
+        if !decision.render {
+            config.render = None;
+        }
+        config.render_decision = Some(decision);
+        store.update_crawl_config(crawl_id, &serde_json::to_string(&config)?)?;
+        if let Some(progress) = &progress {
+            progress.send_replace(CrawlProgress { crawl_id, ..CrawlProgress::default() });
+        }
+    }
+    if config.render.is_none() {
+        render = None;
+    }
+
     // A continued crawl's URLs are known first: they keep their ids, and
     // the budgets are what they left.
     let mut frontier = Frontier::new(config.max_urls, config.max_depth, store.next_url_id()?);
@@ -261,16 +304,6 @@ async fn run(mut config: CrawlConfig, store: Store, control: CrawlControl, resum
     }
     let writer = writer::Writer::spawn(store, crawl_id)?;
 
-    let render = match &config.render {
-        Some(settings) => {
-            let mut render = settings.to_render_config();
-            render.ca_certs = ca_bundle(&config.http.ca_certs)?;
-            render.accept_invalid_certs = config.http.accept_invalid_certs;
-            (render.cookies, render.headers) = render_headers(&config.http.headers, &config.start_urls);
-            Some(RenderPool::new(render))
-        }
-        None => None,
-    };
     let render_threads = config.render.as_ref().map_or(0, |settings| settings.threads);
     let concurrency = config.http.concurrency.max(1);
     let ctx = Arc::new(Ctx {

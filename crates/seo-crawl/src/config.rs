@@ -55,6 +55,11 @@ pub struct CrawlConfig {
     /// Values pulled out of every internal HTML page, and text counted on it.
     pub custom: CustomSettings,
     pub checks: CheckSettings,
+    /// What the auto mode (`render.auto`) decided for this crawl: kept with
+    /// its settings, so that a continued crawl does not ask again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub render_decision: Option<crate::auto::RenderDecision>,
 }
 
 /// How the checks judge the crawl.
@@ -106,6 +111,7 @@ impl Default for CrawlConfig {
             render: None,
             custom: CustomSettings::default(),
             checks: CheckSettings::default(),
+            render_decision: None,
         }
     }
 }
@@ -155,6 +161,8 @@ impl CrawlConfig {
     ///   list and sitemaps, nothing else requested;
     /// - `seo` (the default): the whole raw HTML, links followed, resources
     ///   and external links checked;
+    /// - `auto`: `seo`, rendering JavaScript only if a few pages of the site
+    ///   show that it changes what the crawl reads (`render.auto`);
     /// - `js`: `seo` plus JavaScript rendering;
     /// - `dump`: `js` keeping the raw and rendered documents.
     pub fn preset(name: &str) -> Option<Self> {
@@ -181,6 +189,7 @@ impl CrawlConfig {
                 config.extract = ExtractOptions::head_only();
             }
             "seo" => {}
+            "auto" => config.render = Some(RenderSettings { auto: true, ..RenderSettings::default() }),
             "js" => config.render = Some(RenderSettings::default()),
             "dump" => {
                 config.render = Some(RenderSettings::default());
@@ -330,6 +339,13 @@ impl Default for StoreOptions {
 #[serde(default, deny_unknown_fields)]
 pub struct RenderSettings {
     pub threads: usize,
+    /// Before the crawl, read the start page and a page of each section it
+    /// links to both as sent and rendered, and render the crawl only if
+    /// JavaScript changes their text, links, title, H1, description,
+    /// canonical or robots.
+    pub auto: bool,
+    /// Pages the auto mode reads both ways.
+    pub auto_pages: usize,
     /// Longest wait for the content to settle after DOMContentLoaded.
     pub settle_budget_ms: u64,
     /// DOM quiet period that counts as settled before `load`.
@@ -412,6 +428,8 @@ impl Default for RenderSettings {
             save_data: render.save_data,
             allow_private_network: false,
             recycle_after: render.recycle_after,
+            auto: false,
+            auto_pages: 8,
         }
     }
 }

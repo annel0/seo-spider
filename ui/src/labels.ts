@@ -17,6 +17,7 @@ export const filterLabels: Record<string, string> = {
 };
 
 export const stateLabels: Record<CrawlState, string> = {
+  probing: "Проверка JS",
   crawling: "Обход",
   paused: "Пауза",
   stopping: "Остановка",

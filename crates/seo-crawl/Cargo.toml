@@ -26,6 +26,7 @@ tracing = { workspace = true }
 serde = { workspace = true }
 schemars = { workspace = true }
 serde_json = { workspace = true }
+futures-util = { workspace = true }
 
 [dev-dependencies]
 toml = { workspace = true }

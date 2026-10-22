@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { IssueCount, Overview as OverviewData, Progress } from "../api";
+import type { IssueCount, Overview as OverviewData, Progress, RenderDecision } from "../api";
 import { useColors, type SpeedPoint } from "../hooks";
 import {
   contentTypeLabels,
@@ -13,6 +13,7 @@ import {
   statusLabels,
 } from "../labels";
 import { Chart, type ChartOption } from "./Chart";
+import { Icon } from "./Icon";
 
 /// The tab and filter a status or indexability group opens, when there is one.
 const statusFilter: Record<string, [string, string]> = {
@@ -187,6 +188,7 @@ export function Overview({
 
   return (
     <div className="sheet">
+      {overview.render_decision && <JsDecision decision={overview.render_decision} />}
       <div className="ruled kpis">
         <Kpi value={formatCount(overview.urls)} name="URL на сайте" />
         <Kpi value={formatCount(overview.pages)} name="HTML-страниц" />
@@ -333,5 +335,50 @@ function LegendRow({
       <span className="num">{formatCount(count)}</span>
       <span className="num pct">{total > 0 ? `${Math.round((count * 100) / total)}%` : ""}</span>
     </div>
+  );
+}
+
+/// The auto mode's verdict on JavaScript: on or off, why, and the pages it
+/// read both ways (what the crawler sees in the HTML against after JS).
+function JsDecision({ decision }: { decision: RenderDecision }) {
+  const path = (url: string) => {
+    try {
+      const parsed = new URL(url);
+      return decodeURI(parsed.pathname + parsed.search);
+    } catch {
+      return url;
+    }
+  };
+  return (
+    <details className={`decision ${decision.render ? "on" : "off"}`}>
+      <summary>
+        <span className="verdict">
+          <Icon name="code" size={14} />
+          {decision.render ? "JS включён" : "JS не нужен"}
+        </span>
+        <span className="reason">{decision.reason}</span>
+        <span className="more">{formatCount(decision.samples.length)} стр.</span>
+      </summary>
+      <div className="samples">
+        <div className="head">
+          <span>Страница</span>
+          <span>Слов: HTML → JS</span>
+          <span>Ссылок: HTML → JS</span>
+          <span>Что меняет JS</span>
+        </div>
+        {decision.samples.map((sample) => (
+          <div key={sample.url} className={sample.changes?.length ? "changed" : undefined}>
+            <span title={sample.url}>{path(sample.url)}</span>
+            <span className="figures">
+              {sample.error ? "—" : `${formatCount(sample.words_raw)} → ${formatCount(sample.words_rendered)}`}
+            </span>
+            <span className="figures">
+              {sample.error ? "—" : `${formatCount(sample.links_raw)} → ${formatCount(sample.links_rendered)}`}
+            </span>
+            <span>{sample.error ?? (sample.changes?.length ? sample.changes.join(", ") : "ничего важного")}</span>
+          </div>
+        ))}
+      </div>
+    </details>
   );
 }

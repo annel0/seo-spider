@@ -218,6 +218,12 @@ impl Store {
         Ok(())
     }
 
+    /// Replaces the settings a crawl runs with (after the auto mode decided).
+    pub fn update_crawl_config(&self, crawl_id: i64, config_json: &str) -> Result<()> {
+        self.execute("UPDATE crawls SET config = ?2 WHERE id = ?1", &params![crawl_id, config_json])?;
+        Ok(())
+    }
+
     /// The URLs a crawl has written, in id order (which is the order it
     /// found them), without their facts.
     pub fn saved_urls(&self, crawl_id: i64) -> Result<Vec<SavedUrl>> {

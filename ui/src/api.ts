@@ -5,6 +5,7 @@ import type { Json, JsonObject, Schema } from "./settings";
 export type Preset = { name: string; title: string; description: string };
 
 export type CrawlState =
+  | "probing"
   | "crawling"
   | "paused"
   | "stopping"
@@ -51,6 +52,22 @@ export type IssueCount = {
   tab: string | null;
 };
 
+/// What the auto mode decided about JavaScript, and the pages it read
+/// both ways.
+export type RenderDecision = {
+  render: boolean;
+  reason: string;
+  samples: {
+    url: string;
+    words_raw: number;
+    words_rendered: number;
+    links_raw: number;
+    links_rendered: number;
+    changes?: string[];
+    error?: string;
+  }[];
+};
+
 export type Overview = {
   urls: number;
   pages: number;
@@ -62,6 +79,7 @@ export type Overview = {
   average_ttfb_ms: number;
   bytes: number;
   severities: [Severity, number][];
+  render_decision: RenderDecision | null;
 };
 
 /// How a column's values are drawn.
@@ -236,4 +254,4 @@ export const downloads = {
 };
 
 export const isActive = (state: CrawlState | undefined) =>
-  state === "crawling" || state === "paused" || state === "stopping" || state === "checking";
+  state === "probing" || state === "crawling" || state === "paused" || state === "stopping" || state === "checking";

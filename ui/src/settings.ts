@@ -76,6 +76,11 @@ export const fields: Record<string, Field> = {
   "extract.dom_stats": { label: "Размер DOM и повторы id" },
   "extract.similarity": { label: "Отпечаток для похожих страниц", hint: "Около 0,5 КБ на страницу." },
 
+  "render.auto": {
+    label: "Сначала проверить, нужен ли JS",
+    hint: "Открывает главную и по странице из каждого раздела в браузере и в HTML; рендер на весь обход — только если JS что-то меняет.",
+  },
+  "render.auto_pages": { label: "Страниц на проверку" },
   render: { label: "Выполнять JavaScript", hint: "Каждую страницу открывает движок браузера: видно то, что видит Google. В несколько раз медленнее." },
   "render.threads": { label: "Страниц одновременно" },
   "render.navigation_timeout_ms": { label: "Ждать загрузки страницы", unit: "мс" },

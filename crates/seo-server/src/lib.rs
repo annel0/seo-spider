@@ -162,6 +162,7 @@ struct Preset {
 
 async fn presets() -> Json<Vec<Preset>> {
     Json(vec![
+        Preset { name: "auto", title: "Авто", description: "Сам решает, нужен ли JavaScript: открывает главную и по странице из каждого раздела в браузере и сравнивает с HTML. Если JS добавляет текст или ссылки или меняет title, H1, canonical, robots — включает рендер на весь обход, иначе обходит без него, быстро." },
         Preset { name: "headers", title: "Только заголовки", description: "Только код ответа и заголовки для стартового адреса и sitemap. Страницы не скачиваются, по ссылкам не ходит." },
         Preset { name: "minimal", title: "Минимум", description: "Читает только <head> страниц из стартового адреса и sitemap: title, description, canonical, robots. По ссылкам не ходит." },
         Preset { name: "seo", title: "SEO", description: "Скачивает весь HTML, ходит по ссылкам, проверяет картинки, скрипты и внешние ссылки. JavaScript не выполняет." },
@@ -280,8 +281,8 @@ async fn stop_crawl(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> 
 #[derive(Serialize, Clone, PartialEq)]
 struct ProgressEvent {
     crawl_id: i64,
-    /// crawling, paused, stopping, checking, finished, stopped, failed,
-    /// interrupted.
+    /// probing (the auto mode reads pages both ways), crawling, paused,
+    /// stopping, checking, finished, stopped, failed, interrupted.
     state: &'static str,
     error: Option<String>,
     urls: usize,
@@ -299,6 +300,7 @@ fn progress_event(running: &Running) -> ProgressEvent {
     let phase = running.phase.borrow().clone();
     let (state, error) = match phase {
         Phase::Crawling if progress.stopping => ("stopping", None),
+        Phase::Crawling if progress.probing => ("probing", None),
         Phase::Crawling if progress.paused => ("paused", None),
         Phase::Crawling => ("crawling", None),
         Phase::Checking => ("checking", None),
@@ -567,10 +569,16 @@ struct OverviewReply {
     counts: seo_store::Overview,
     /// URLs with an issue of each severity, and issues found in all.
     severities: Vec<(&'static str, i64)>,
+    /// What the auto mode decided about JavaScript, for a crawl run in it.
+    render_decision: Option<seo_crawl::RenderDecision>,
 }
 
 async fn overview(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> ApiResult<OverviewReply> {
-    let (counts, issues) = read(&state, move |store| Ok((store.overview(id)?, store.issue_counts(id)?))).await?;
+    let (counts, issues, config) =
+        read(&state, move |store| Ok((store.overview(id)?, store.issue_counts(id)?, store.crawl_config(id)?))).await?;
+    let render_decision = serde_json::from_str::<serde_json::Value>(&config)
+        .ok()
+        .and_then(|config| serde_json::from_value(config["render_decision"].clone()).ok());
     let mut severities = vec![("high", 0), ("medium", 0), ("low", 0)];
     for (code, count) in issues {
         if let Some(check) = seo_checks::find(&code) {
@@ -579,7 +587,7 @@ async fn overview(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> Ap
             }
         }
     }
-    Ok(Json(OverviewReply { counts, severities }))
+    Ok(Json(OverviewReply { counts, severities, render_decision }))
 }
 
 /// Every tab of the crawl as one XLSX workbook, as `seo-spider export`
