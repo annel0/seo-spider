@@ -19,6 +19,7 @@ seo-crawl = { workspace = true }
 seo-store = { workspace = true }
 seo-checks = { workspace = true }
 seo-server = { workspace = true }
+seo-export = { workspace = true }
 rusqlite = { workspace = true }
 rayon = { workspace = true }
 mimalloc = { workspace = true }
@@ -30,6 +31,5 @@ anyhow = { workspace = true }
 serde_json = { workspace = true }
 tracing-subscriber = { workspace = true }
 csv = { workspace = true }
-rust_xlsxwriter = { workspace = true }
 toml = { workspace = true }
 zstd = { workspace = true }

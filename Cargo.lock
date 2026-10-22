@@ -1152,6 +1152,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "dyn-clone"
+version = "1.0.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
+
+[[package]]
 name = "ego-tree"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3108,6 +3114,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ref-cast"
+version = "1.0.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e440fb4e4b4147295338efb76001ab9e4efc0e5839df2c47fc5ac2381d365c3"
+dependencies = [
+ "ref-cast-impl",
+]
+
+[[package]]
+name = "ref-cast-impl"
+version = "1.0.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92ecd8964f8453721699a1ed72037b0db49ce2f5a5138486ee89bed6f67cdf3a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
+]
+
+[[package]]
 name = "regex"
 version = "1.12.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3424,6 +3450,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "schemars"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab508826f74a77ca9d5aba6ff19b522583ee3eaf28a19384ff3d0e5835fadf6e"
+dependencies = [
+ "dyn-clone",
+ "ref-cast",
+ "schemars_derive",
+ "serde",
+ "serde_json",
+ "url",
+]
+
+[[package]]
+name = "schemars_derive"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1c3a92094fa7d61aa124645844facb6b554dfc797136d0f5fd1f890e2bffc69"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_derive_internals",
+ "syn 3.0.6",
+]
+
+[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3537,10 +3589,10 @@ dependencies = [
  "mimalloc",
  "rayon",
  "rusqlite",
- "rust_xlsxwriter",
  "rustc-hash 2.1.2",
  "seo-checks",
  "seo-crawl",
+ "seo-export",
  "seo-page",
  "seo-server",
  "seo-store",
@@ -3563,6 +3615,7 @@ dependencies = [
  "regex",
  "reqwest",
  "rustc-hash 2.1.2",
+ "schemars",
  "scraper",
  "seo-checks",
  "seo-page",
@@ -3579,6 +3632,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "seo-export"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "csv",
+ "rayon",
+ "rusqlite",
+ "rust_xlsxwriter",
+ "rustc-hash 2.1.2",
+ "seo-checks",
+ "seo-page",
+ "seo-store",
+ "serde_json",
+]
+
+[[package]]
 name = "seo-page"
 version = "0.1.0"
 dependencies = [
@@ -3586,6 +3655,7 @@ dependencies = [
  "lol_html",
  "regex",
  "rustc-hash 2.1.2",
+ "schemars",
  "scraper",
  "serde",
  "serde_json",
@@ -3616,11 +3686,14 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "csv",
  "futures-util",
  "mime_guess",
  "rust-embed",
+ "schemars",
  "seo-checks",
  "seo-crawl",
+ "seo-export",
  "seo-page",
  "seo-store",
  "serde",
@@ -3672,6 +3745,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "serde_derive_internals"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f852137cce035d6a4df67ccce505ff6b3e9fd3a10e3e52b24dc71e650bb1a9bd"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
 ]
 
 [[package]]

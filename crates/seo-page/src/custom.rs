@@ -11,10 +11,11 @@ use std::collections::HashMap;
 
 use regex::Regex;
 use scraper::{ElementRef, Html, Node, Selector};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// One value to pull out of every page.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ExtractorSpec {
     /// The column name in the export.
@@ -46,7 +47,7 @@ fn default_max() -> usize {
 }
 
 /// What an element matched by CSS or XPath gives.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Output {
     /// Its text, whitespace collapsed.
@@ -59,7 +60,7 @@ pub enum Output {
 }
 
 /// Text or a pattern to count on every page.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SearchSpec {
     pub name: String,
@@ -73,7 +74,7 @@ pub struct SearchSpec {
     pub scope: SearchScope,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchScope {
     /// The HTML source.

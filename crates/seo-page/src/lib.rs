@@ -14,11 +14,12 @@ pub use extract::{extract, extract_tree, extract_with};
 pub use similarity::{similarity, SIGNATURE};
 pub use stream::extract_stream;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// What `extract_with` reads besides the `<head>` facts, which it always
 /// reads. Each part switched off saves its pass over the document.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ExtractOptions {
     /// `<a href>` and `<area href>` with anchor text, rel and position.

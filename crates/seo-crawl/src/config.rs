@@ -4,11 +4,12 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use seo_page::{ExtractOptions, ExtractorSpec, SearchSpec};
 use url::Url;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct CrawlConfig {
     /// Where the crawl starts. With `follow_links` off these are the only
@@ -57,7 +58,7 @@ pub struct CrawlConfig {
 }
 
 /// How the checks judge the crawl.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct CheckSettings {
     /// Pages whose main content is at least this similar (0-1, estimated
@@ -73,7 +74,7 @@ impl Default for CheckSettings {
 
 /// Custom extraction and search (`[[custom.extract]]`, `[[custom.search]]`):
 /// run on the raw document and, when pages are rendered, on the rendered one.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct CustomSettings {
     pub extract: Vec<ExtractorSpec>,
@@ -193,7 +194,7 @@ impl CrawlConfig {
 }
 
 /// How much of each internal response is read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum FetchLevel {
     /// Status and headers only; the body is never read.
@@ -206,7 +207,7 @@ pub enum FetchLevel {
     Full,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct HttpConfig {
     pub user_agent: String,
@@ -304,7 +305,7 @@ impl HttpConfig {
 }
 
 /// What the crawl keeps besides responses and facts.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct StoreOptions {
     /// Keep each internal HTML response body.
@@ -325,7 +326,7 @@ impl Default for StoreOptions {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct RenderSettings {
     pub threads: usize,

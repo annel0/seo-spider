@@ -6,7 +6,7 @@ use std::path::Path;
 
 mod view;
 
-pub use view::{CrawlInfo, Overview, RowQuery, RowsPage, UrlRow, FILTERS};
+pub use view::{CrawlInfo, Overview, RowQuery, RowsPage, StoredRow, FILTERS, SCOPES};
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -532,15 +532,15 @@ impl Store {
 }
 
 /// A URL with its documents' facts and render, as `encoded_url` reads it.
-const SELECT_URL: &str = "SELECT u.id, u.url, u.status, u.location, u.content_type, u.ttfb_ms, u.size, u.error, u.headers,
-        u.depth, u.in_sitemap, u.blocked_by_robots, u.internal, raw.data, rendered.data,
+pub(crate) const SELECT_URL: &str = "SELECT u.id, u.url, u.status, u.location, u.content_type, u.ttfb_ms, u.size, u.error, u.headers,
+        u.depth, u.in_sitemap, u.blocked_by_robots, u.internal, fw.data, fr.data,
         r.url_id, r.error, r.settled, r.console_errors, r.resources
     FROM urls u
-    LEFT JOIN facts raw ON raw.url_id = u.id AND raw.source = 'raw'
-    LEFT JOIN facts rendered ON rendered.url_id = u.id AND rendered.source = 'rendered'
+    LEFT JOIN facts fw ON fw.url_id = u.id AND fw.source = 'raw'
+    LEFT JOIN facts fr ON fr.url_id = u.id AND fr.source = 'rendered'
     LEFT JOIN renders r ON r.url_id = u.id";
 
-fn encoded_url(row: &rusqlite::Row<'_>) -> Result<EncodedUrl> {
+pub(crate) fn encoded_url(row: &rusqlite::Row<'_>) -> Result<EncodedUrl> {
     let headers: String = row.get(8)?;
     Ok(EncodedUrl {
         url: StoredUrl {

@@ -12,6 +12,7 @@ htmlize = { workspace = true }
 rustc-hash = { workspace = true }
 url = { workspace = true }
 serde = { workspace = true }
+schemars = { workspace = true }
 xxhash-rust = { workspace = true }
 regex = { workspace = true }
 serde_json = { workspace = true }

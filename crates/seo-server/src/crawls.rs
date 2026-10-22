@@ -181,6 +181,7 @@ pub async fn start(db: PathBuf, config: CrawlConfig) -> Result<Running> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use seo_crawl::RenderSettings;
 
     fn request(config: Option<serde_json::Value>) -> StartRequest {
         StartRequest {
@@ -209,6 +210,12 @@ mod tests {
         assert_eq!(patched.http.retries, CrawlConfig::default().http.retries);
         let rendered = build_config(&StartRequest { render_threads: Some(4), ..request(None) }).unwrap();
         assert_eq!(rendered.render.unwrap().threads, 4);
+        // The settings form turns a preset's rendering off with null, and on
+        // with an object that the defaults fill in.
+        let off = build_config(&StartRequest { preset: "js".into(), ..request(Some(serde_json::json!({"render": null}))) }).unwrap();
+        assert!(off.render.is_none());
+        let on = build_config(&request(Some(serde_json::json!({"render": {"locale": "ru-RU"}})))).unwrap().render.unwrap();
+        assert_eq!((on.locale.as_deref(), on.threads), (Some("ru-RU"), RenderSettings::default().threads));
     }
 
     #[test]

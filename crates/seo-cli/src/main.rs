@@ -3,8 +3,9 @@
 //! Settings come in layers: a preset (`--preset`, `seo` by default), then a
 //! TOML file (`--config`) merged over it, then command-line flags.
 
-mod export;
 mod report;
+
+use seo_export as export;
 
 use std::io::Write as _;
 use std::path::PathBuf;

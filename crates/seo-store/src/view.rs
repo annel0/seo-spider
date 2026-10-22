@@ -20,34 +20,6 @@ pub struct CrawlInfo {
     pub urls: i64,
 }
 
-/// One row of the internal URLs table: the response and the facts of the
-/// document the page is judged by (rendered when it was rendered).
-#[derive(Debug, Clone, Serialize)]
-pub struct UrlRow {
-    pub id: i64,
-    pub url: String,
-    pub status: i64,
-    pub content_type: Option<String>,
-    pub error: Option<String>,
-    pub depth: Option<i64>,
-    pub ttfb_ms: i64,
-    pub size: i64,
-    pub in_sitemap: bool,
-    pub title: Option<String>,
-    pub title_length: Option<i64>,
-    pub description: Option<String>,
-    pub description_length: Option<i64>,
-    pub h1: Option<String>,
-    pub h1_length: Option<i64>,
-    pub word_count: Option<i64>,
-    pub links: Option<i64>,
-    pub canonical: Option<String>,
-    pub robots: Option<String>,
-    pub rendered: bool,
-    /// Issues stored for the URL (live ones while the crawl runs).
-    pub issues: i64,
-}
-
 /// A crawl at a glance, for the overview's charts: counts by group.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Overview {
@@ -69,38 +41,71 @@ pub struct Overview {
     pub bytes: i64,
 }
 
+/// One row of a table: a URL with its facts decoded, and how many issues
+/// it has.
+#[derive(Debug, Clone)]
+pub struct StoredRow {
+    pub url: crate::StoredUrl,
+    pub issues: i64,
+}
+
 /// What `url_rows` returns: the rows asked for and how many match.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct RowsPage {
     pub total: i64,
-    pub rows: Vec<UrlRow>,
+    pub rows: Vec<StoredRow>,
 }
 
 /// Which rows, in what order.
 #[derive(Debug, Clone)]
 pub struct RowQuery {
+    /// A key of `SCOPES`: the URLs a table lists at all.
+    pub scope: String,
     /// A key of `FILTERS`, or `issue:<code>` for the URLs with that issue.
     pub filter: String,
     /// Part of the address, any case.
     pub search: Option<String>,
-    /// A key of `SORTS`.
+    /// A sortable column (see `sort_expression`).
     pub sort: String,
     pub descending: bool,
     pub offset: i64,
     pub limit: i64,
 }
 
-/// The filters of the internal table: key and SQL condition.
+const HTML: &str = "(lower(u.content_type) LIKE 'text/html%' OR lower(u.content_type) LIKE 'application/xhtml%')";
+
+/// The URLs a table lists: key and SQL condition.
+pub const SCOPES: &[(&str, &str)] = &[
+    ("all", "1"),
+    ("internal", "u.internal = 1"),
+    ("external", "u.internal = 0"),
+    ("pages", "u.internal = 1 AND (lower(u.content_type) LIKE 'text/html%' OR lower(u.content_type) LIKE 'application/xhtml%')"),
+    ("images", "lower(u.content_type) LIKE 'image/%'"),
+];
+
+/// Filters within a table: key and SQL condition.
 pub const FILTERS: &[(&str, &str)] = &[
     ("all", "1"),
-    ("html", "lower(u.content_type) LIKE 'text/html%'"),
+    ("html", HTML),
+    ("js", "(lower(u.content_type) LIKE '%javascript%' OR lower(u.content_type) LIKE '%ecmascript%')"),
+    ("css", "lower(u.content_type) LIKE 'text/css%'"),
+    ("image", "lower(u.content_type) LIKE 'image/%'"),
+    ("pdf", "lower(u.content_type) LIKE 'application/pdf%'"),
+    ("font", "(lower(u.content_type) LIKE 'font/%' OR lower(u.content_type) LIKE '%font%')"),
+    ("data", "(lower(u.content_type) LIKE '%json%' OR lower(u.content_type) LIKE '%xml%')"),
     ("2xx", "u.status BETWEEN 200 AND 299"),
     ("3xx", "u.status BETWEEN 300 AND 399"),
     ("4xx", "u.status BETWEEN 400 AND 499"),
     ("5xx", "u.status BETWEEN 500 AND 599"),
     ("no_response", "u.status = 0 AND u.blocked_by_robots = 0"),
     ("blocked", "u.blocked_by_robots = 1"),
+    ("internal", "u.internal = 1"),
+    ("external", "u.internal = 0"),
     ("noindex", "lower(coalesce(CASE WHEN fr.url_id IS NULL THEN fw.robots ELSE fr.robots END, '')) LIKE '%noindex%'"),
+    ("in_sitemap", "u.in_sitemap = 1"),
+    ("rendered", "fr.url_id IS NOT NULL"),
+    ("large", "u.size > 102400"),
+    ("slow", "u.status > 0 AND u.ttfb_ms >= 1000"),
 ];
 
 /// The SQL expression a sortable column orders by.
@@ -146,9 +151,12 @@ impl Store {
         Ok(crawls)
     }
 
-    /// A page of the crawl's internal URLs.
+    /// A page of a table: the crawl's URLs in the query's scope and filter.
     pub fn url_rows(&self, crawl_id: i64, query: &RowQuery) -> Result<RowsPage> {
-        let mut conditions = vec!["u.crawl_id = ?1".to_string(), "u.internal = 1".to_string()];
+        let Some((_, scope)) = SCOPES.iter().find(|(key, _)| *key == query.scope) else {
+            bail!("unknown scope {:?}", query.scope);
+        };
+        let mut conditions = vec!["u.crawl_id = ?1".to_string(), scope.to_string()];
         let mut values: Vec<Value> = vec![Value::Integer(crawl_id)];
         match query.filter.strip_prefix("issue:") {
             Some(code) => {
@@ -178,78 +186,52 @@ impl Store {
             self.conn.query_row(&format!("SELECT count(*) {ROWS_FROM} WHERE {filter}"), params_from_iter(&values), |row| {
                 row.get(0)
             })?;
-        let columns = ["title", "description", "h1", "canonical", "robots", "word_count", "links"]
-            .iter()
-            .map(|column| effective_value(column))
-            .collect::<Vec<_>>()
-            .join(", ");
         let sql = format!(
-            "SELECT u.id, u.url, u.status, u.content_type, u.error, u.depth, u.ttfb_ms, u.size, u.in_sitemap,
-                    {columns}, fr.url_id IS NOT NULL
-             {ROWS_FROM} WHERE {filter}
-             ORDER BY {order} IS NULL, {order} {direction}, u.id
-             LIMIT {} OFFSET {}",
-            query.limit.clamp(1, 1000),
+            "{} WHERE {filter} ORDER BY {order} IS NULL, {order} {direction}, u.id LIMIT {} OFFSET {}",
+            crate::SELECT_URL,
+            query.limit.clamp(1, 5000),
             query.offset.max(0)
         );
         let mut select = self.conn.prepare(&sql)?;
-        let mut rows: Vec<UrlRow> = select
-            .query_map(params_from_iter(&values), |row| {
-                let title: Option<String> = row.get(9)?;
-                let description: Option<String> = row.get(10)?;
-                let h1: Option<String> = row.get(11)?;
-                let length = |text: &Option<String>| text.as_ref().map(|text| text.chars().count() as i64);
-                Ok(UrlRow {
-                    id: row.get(0)?,
-                    url: row.get(1)?,
-                    status: row.get(2)?,
-                    content_type: row.get(3)?,
-                    error: row.get(4)?,
-                    depth: row.get(5)?,
-                    ttfb_ms: row.get(6)?,
-                    size: row.get(7)?,
-                    in_sitemap: row.get(8)?,
-                    title_length: length(&title),
-                    description_length: length(&description),
-                    h1_length: length(&h1),
-                    title,
-                    description,
-                    h1,
-                    canonical: row.get(12)?,
-                    robots: row.get(13)?,
-                    word_count: row.get(14)?,
-                    links: row.get(15)?,
-                    rendered: row.get(16)?,
-                    issues: 0,
-                })
-            })?
-            .collect::<rusqlite::Result<_>>()?;
+        let mut found = select.query(params_from_iter(&values))?;
+        let mut rows = Vec::new();
+        while let Some(row) = found.next()? {
+            rows.push(StoredRow { url: crate::encoded_url(row)?.decode()?, issues: 0 });
+        }
         if !rows.is_empty() {
-            let ids = rows.iter().map(|row| row.id.to_string()).collect::<Vec<_>>().join(",");
+            let ids = rows.iter().map(|row| row.url.id.to_string()).collect::<Vec<_>>().join(",");
             let mut select =
                 self.conn.prepare(&format!("SELECT url_id, count(*) FROM issues WHERE url_id IN ({ids}) GROUP BY url_id"))?;
             let counts: std::collections::HashMap<i64, i64> = select
                 .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
                 .collect::<rusqlite::Result<_>>()?;
             for row in &mut rows {
-                row.issues = counts.get(&row.id).copied().unwrap_or(0);
+                row.issues = counts.get(&row.url.id).copied().unwrap_or(0);
             }
         }
         Ok(RowsPage { total, rows })
     }
 
-    /// How many internal URLs each filter of `FILTERS` keeps.
-    pub fn filter_counts(&self, crawl_id: i64) -> Result<Vec<(&'static str, i64)>> {
-        let sums = FILTERS
-            .iter()
-            .map(|(_, condition)| format!("coalesce(sum(CASE WHEN {condition} THEN 1 ELSE 0 END), 0)"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!("SELECT {sums} {ROWS_FROM} WHERE u.crawl_id = ?1 AND u.internal = 1");
-        self.conn.query_row(&sql, params![crawl_id], |row| {
-            FILTERS.iter().enumerate().map(|(at, (key, _))| Ok((*key, row.get(at)?))).collect()
-        })
-        .map_err(Into::into)
+    /// How many URLs each (scope, filter) pair keeps, in one pass over the
+    /// crawl: keys of `SCOPES` and `FILTERS`.
+    pub fn filter_counts(&self, crawl_id: i64, pairs: &[(&str, &str)]) -> Result<Vec<i64>> {
+        let mut sums = Vec::with_capacity(pairs.len());
+        for (scope, filter) in pairs {
+            let Some((_, scope)) = SCOPES.iter().find(|(key, _)| key == scope) else {
+                bail!("unknown scope {scope:?}");
+            };
+            let Some((_, filter)) = FILTERS.iter().find(|(key, _)| key == filter) else {
+                bail!("unknown filter {filter:?}");
+            };
+            sums.push(format!("coalesce(sum(CASE WHEN ({scope}) AND ({filter}) THEN 1 ELSE 0 END), 0)"));
+        }
+        if sums.is_empty() {
+            return Ok(Vec::new());
+        }
+        let sql = format!("SELECT {} {ROWS_FROM} WHERE u.crawl_id = ?1", sums.join(", "));
+        self.conn
+            .query_row(&sql, params![crawl_id], |row| (0..pairs.len()).map(|at| row.get(at)).collect())
+            .map_err(Into::into)
     }
 
     /// Counts by group for the overview, over the crawl's internal URLs.
@@ -335,7 +317,7 @@ impl Store {
     /// How many URLs have each issue code.
     pub fn issue_counts(&self, crawl_id: i64) -> Result<Vec<(String, i64)>> {
         let mut select = self.conn.prepare_cached(
-            "SELECT code, count(*) FROM issues WHERE crawl_id = ?1 GROUP BY code ORDER BY count(*) DESC",
+            "SELECT code, count(DISTINCT url_id) AS urls FROM issues WHERE crawl_id = ?1 GROUP BY code ORDER BY urls DESC",
         )?;
         let counts = select
             .query_map(params![crawl_id], |row| Ok((row.get(0)?, row.get(1)?)))?
@@ -410,7 +392,8 @@ mod tests {
         drop(store);
 
         let store = Store::open_read(&path).unwrap();
-        let query = |filter: &str, sort: &str, descending: bool, search: Option<&str>| RowQuery {
+        let query = |scope: &str, filter: &str, sort: &str, descending: bool, search: Option<&str>| RowQuery {
+            scope: scope.into(),
             filter: filter.into(),
             search: search.map(Into::into),
             sort: sort.into(),
@@ -418,21 +401,26 @@ mod tests {
             offset: 0,
             limit: 100,
         };
-        let page = store.url_rows(crawl, &query("all", "title_length", true, None)).unwrap();
+        let title = |row: &StoredRow| row.url.facts().and_then(|facts| facts.title()).map(str::to_string);
+        let page = store.url_rows(crawl, &query("internal", "all", "title_length", true, None)).unwrap();
         assert_eq!(page.total, 4);
         // Longest title first; rows without a title last.
-        assert_eq!(page.rows[0].url, "https://example.com/about");
-        assert_eq!(page.rows[0].title_length, Some(27));
-        assert!(page.rows[2].title.is_none() && page.rows[3].title.is_none());
-        let errors = store.url_rows(crawl, &query("4xx", "url", false, None)).unwrap();
-        assert_eq!(errors.rows.iter().map(|row| row.url.as_str()).collect::<Vec<_>>(), ["https://example.com/gone"]);
-        let missing = store.url_rows(crawl, &query("issue:title_missing", "url", false, None)).unwrap();
+        assert_eq!(page.rows[0].url.http.url, "https://example.com/about");
+        assert!(title(&page.rows[2]).is_none() && title(&page.rows[3]).is_none());
+        let errors = store.url_rows(crawl, &query("internal", "4xx", "url", false, None)).unwrap();
+        assert_eq!(errors.rows.iter().map(|row| row.url.http.url.as_str()).collect::<Vec<_>>(), ["https://example.com/gone"]);
+        let missing = store.url_rows(crawl, &query("pages", "issue:title_missing", "url", false, None)).unwrap();
         assert_eq!(missing.total, 1);
         assert_eq!(missing.rows[0].issues, 2);
-        let found = store.url_rows(crawl, &query("all", "url", false, Some("ABOUT"))).unwrap();
+        let found = store.url_rows(crawl, &query("internal", "all", "url", false, Some("ABOUT"))).unwrap();
         assert_eq!(found.total, 1);
-        let counts = store.filter_counts(crawl).unwrap();
-        assert!(counts.contains(&("all", 4)) && counts.contains(&("2xx", 3)) && counts.contains(&("4xx", 1)));
+        assert_eq!(store.url_rows(crawl, &query("external", "all", "url", false, None)).unwrap().total, 0);
+        let counts = store.filter_counts(crawl, &[("internal", "all"), ("internal", "2xx"), ("internal", "4xx"), ("external", "all")]).unwrap();
+        assert_eq!(counts, [4, 3, 1, 0]);
+        assert!(store.filter_counts(crawl, &[("internal", "nope")]).is_err());
+        assert!(store.url_rows(crawl, &query("internal", "nope", "url", false, None)).is_err());
+        assert!(store.url_rows(crawl, &query("nowhere", "all", "url", false, None)).is_err());
+        assert!(store.url_rows(crawl, &query("internal", "all", "url; DROP TABLE urls", false, None)).is_err());
         assert_eq!(store.issue_counts(crawl).unwrap().len(), 2);
         let overview = store.overview(crawl).unwrap();
         assert_eq!((overview.urls, overview.pages), (4, 4));
@@ -442,8 +430,6 @@ mod tests {
         assert!(overview.indexability.contains(&("error".into(), 1)));
         assert_eq!(overview.content_types, [("html".to_string(), 4)]);
         assert_eq!(store.url_issues(4).unwrap().len(), 2);
-        assert!(store.url_rows(crawl, &query("nope", "url", false, None)).is_err());
-        assert!(store.url_rows(crawl, &query("all", "url; DROP TABLE urls", false, None)).is_err());
         assert_eq!(store.crawls().unwrap()[0].urls, 4);
         let one = store.url(2).unwrap().unwrap();
         assert_eq!(one.raw.unwrap().title(), Some("About us and the long story"));

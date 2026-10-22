@@ -1,4 +1,5 @@
-//! Tabs of a crawl, streamed row by row into CSV files or one XLSX workbook:
+//! Tabs of a crawl, streamed row by row into CSV files or one XLSX workbook
+//! (for `seo-spider export` and the UI's download):
 //! facts are read a chunk at a time and turned into rows in parallel, so
 //! memory does not grow with the crawl.
 

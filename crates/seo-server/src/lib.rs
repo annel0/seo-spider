@@ -6,7 +6,9 @@
 
 mod assets;
 mod crawls;
+mod tabs;
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -21,7 +23,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::Stream;
-use seo_store::{RowQuery, RowsPage, Store};
+use seo_store::{RowQuery, Store};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
@@ -57,15 +59,20 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
     let state = Arc::new(AppState { db: options.db.clone(), running: Mutex::new(None) });
     let mut api = Router::new()
         .route("/api/presets", get(presets))
+        .route("/api/presets/{name}/config", get(preset_config))
+        .route("/api/config/schema", get(config_schema))
         .route("/api/crawls", get(list_crawls).post(start_crawl))
         .route("/api/crawls/{id}/pause", post(pause_crawl))
         .route("/api/crawls/{id}/resume", post(resume_crawl))
         .route("/api/crawls/{id}/stop", post(stop_crawl))
         .route("/api/crawls/{id}/events", get(events))
-        .route("/api/crawls/{id}/summary", get(summary))
         .route("/api/crawls/{id}/overview", get(overview))
-        .route("/api/crawls/{id}/rows", get(rows))
+        .route("/api/crawls/{id}/issues", get(issues))
+        .route("/api/crawls/{id}/tabs", get(crawl_tabs))
+        .route("/api/crawls/{id}/tabs/{tab}/rows", get(tab_rows))
+        .route("/api/crawls/{id}/tabs/{tab}/export.csv", get(export_csv))
         .route("/api/urls/{id}", get(url_detail))
+        .route("/api/crawls/{id}/export.xlsx", get(export_xlsx))
         .with_state(state);
     if let Some(token) = options.token.clone() {
         api = api.layer(axum::middleware::from_fn(move |request: axum::extract::Request, next: axum::middleware::Next| {
@@ -128,12 +135,24 @@ struct Preset {
 
 async fn presets() -> Json<Vec<Preset>> {
     Json(vec![
-        Preset { name: "headers", title: "Только заголовки", description: "Статус и заголовки ответа (HEAD) для стартовых URL и sitemap; тело не скачивается." },
-        Preset { name: "minimal", title: "Минимум", description: "Заголовки и <head> страниц из стартовых URL и sitemap: title, description, canonical, robots." },
-        Preset { name: "seo", title: "SEO-аудит", description: "Весь HTML, обход по ссылкам, проверка ресурсов и внешних ссылок." },
-        Preset { name: "js", title: "С рендером", description: "Как SEO-аудит, плюс рендер JavaScript: страница такой, какой её видит браузер." },
-        Preset { name: "dump", title: "Полный дамп", description: "С рендером и с сохранением сырого и отрисованного HTML каждой страницы." },
+        Preset { name: "headers", title: "Только заголовки", description: "Только код ответа и заголовки для стартового адреса и sitemap. Страницы не скачиваются, по ссылкам не ходит." },
+        Preset { name: "minimal", title: "Минимум", description: "Читает только <head> страниц из стартового адреса и sitemap: title, description, canonical, robots. По ссылкам не ходит." },
+        Preset { name: "seo", title: "SEO", description: "Скачивает весь HTML, ходит по ссылкам, проверяет картинки, скрипты и внешние ссылки. JavaScript не выполняет." },
+        Preset { name: "js", title: "SEO + JS", description: "Как SEO, но каждую страницу ещё и открывает движок браузера и выполняет её JavaScript: видно то, что видит Google. В несколько раз медленнее." },
+        Preset { name: "dump", title: "Дамп", description: "Как SEO + JS, плюс сохраняет исходный и отрисованный HTML каждой страницы на диск." },
     ])
+}
+
+/// A preset's settings in full, as the settings form starts from them.
+async fn preset_config(Path(name): Path<String>) -> ApiResult<seo_crawl::CrawlConfig> {
+    seo_crawl::CrawlConfig::preset(&name)
+        .map(Json)
+        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("нет пресета {name:?}")))
+}
+
+/// The JSON Schema of the crawl settings: the settings form is built from it.
+async fn config_schema() -> Json<serde_json::Value> {
+    Json(serde_json::to_value(schemars::schema_for!(seo_crawl::CrawlConfig)).unwrap_or_default())
 }
 
 /// A crawl in the list, with where it is.
@@ -298,25 +317,16 @@ async fn events(
 }
 
 #[derive(Serialize)]
-struct Summary {
-    filters: Vec<FilterCount>,
-    issues: Vec<IssueCount>,
-}
-
-#[derive(Serialize)]
-struct FilterCount {
-    key: &'static str,
-    count: i64,
-}
-
-#[derive(Serialize)]
 struct IssueCount {
     code: String,
+    /// URLs with the issue.
     count: i64,
     title: Option<&'static str>,
     description: Option<&'static str>,
     severity: Option<&'static str>,
     category: Option<&'static str>,
+    /// The tab that lists it as a filter.
+    tab: Option<&'static str>,
 }
 
 fn issue_info(code: String, count: i64) -> IssueCount {
@@ -327,17 +337,172 @@ fn issue_info(code: String, count: i64) -> IssueCount {
         description: check.map(|check| check.description),
         severity: check.map(|check| check.severity.as_str()),
         category: check.map(|check| check.category),
+        tab: check.and_then(tabs::tab_of_issue),
         code,
     }
 }
 
-/// Counts for the filters of the internal table, and the crawl's issues.
-async fn summary(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> ApiResult<Summary> {
-    let (filters, issues) = read(&state, move |store| Ok((store.filter_counts(id)?, store.issue_counts(id)?))).await?;
-    Ok(Json(Summary {
-        filters: filters.into_iter().map(|(key, count)| FilterCount { key, count }).collect(),
-        issues: issues.into_iter().map(|(code, count)| issue_info(code, count)).collect(),
-    }))
+/// The issues the crawl found, most widespread first.
+async fn issues(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> ApiResult<Vec<IssueCount>> {
+    let issues = read(&state, move |store| store.issue_counts(id)).await?;
+    Ok(Json(issues.into_iter().map(|(code, count)| issue_info(code, count)).collect()))
+}
+
+/// A tab for the UI: its columns, and its filters with how many URLs each
+/// keeps.
+#[derive(Serialize)]
+struct TabReply {
+    key: &'static str,
+    title: &'static str,
+    /// URLs the tab lists.
+    total: i64,
+    columns: Vec<tabs::Column>,
+    filters: Vec<serde_json::Value>,
+}
+
+/// The tabs of a crawl, with counts.
+async fn crawl_tabs(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> ApiResult<Vec<TabReply>> {
+    let replies = read(&state, move |store| {
+        let tabs = crawl_tab_views(store, id)?;
+        let mut pairs: Vec<(&str, &str)> = Vec::new();
+        for tab in &tabs {
+            for filter in std::iter::once(&"all").chain(tab.filters) {
+                if !pairs.contains(&(tab.scope, *filter)) {
+                    pairs.push((tab.scope, *filter));
+                }
+            }
+        }
+        let counts: HashMap<(&str, &str), i64> = pairs.iter().copied().zip(store.filter_counts(id, &pairs)?).collect();
+        let issues: HashMap<String, i64> = store.issue_counts(id)?.into_iter().collect();
+        Ok(tabs
+            .into_iter()
+            .map(|tab| TabReply {
+                key: tab.key,
+                title: tab.title,
+                total: counts.get(&(tab.scope, "all")).copied().unwrap_or(0),
+                filters: tabs::filters(&tab, &counts, &issues),
+                columns: tab.columns,
+            })
+            .collect())
+    })
+    .await?;
+    Ok(Json(replies))
+}
+
+fn crawl_tab_views(store: &Store, id: i64) -> Result<Vec<tabs::TabView>> {
+    let config = store.crawl_config(id).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
+    Ok(tabs::tabs_of(&config))
+}
+
+fn crawl_tab(store: &Store, id: i64, key: &str) -> Result<tabs::TabView> {
+    match crawl_tab_views(store, id)?.into_iter().find(|tab| tab.key == key) {
+        Some(tab) => Ok(tab),
+        None => bail!("нет вкладки {key:?}"),
+    }
+}
+
+#[derive(Deserialize)]
+struct RowsParams {
+    filter: Option<String>,
+    q: Option<String>,
+    /// A column key of the tab.
+    sort: Option<String>,
+    desc: Option<bool>,
+    offset: Option<i64>,
+    limit: Option<i64>,
+}
+
+impl RowsParams {
+    /// The store's query for a tab: an issue filter lists every URL with
+    /// the issue, whatever the tab's scope.
+    fn query(&self, tab: &tabs::TabView) -> RowQuery {
+        let filter = self.filter.clone().unwrap_or_else(|| "all".into());
+        let sort = self
+            .sort
+            .as_deref()
+            .and_then(|key| tab.columns.iter().find(|column| column.key == key))
+            .and_then(|column| column.sort)
+            .unwrap_or("url");
+        RowQuery {
+            scope: if filter.starts_with("issue:") { "all".into() } else { tab.scope.into() },
+            filter,
+            search: self.q.clone().filter(|text| !text.trim().is_empty()),
+            sort: sort.into(),
+            descending: self.desc.unwrap_or(false),
+            offset: self.offset.unwrap_or(0),
+            limit: self.limit.unwrap_or(100),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct TabRows {
+    total: i64,
+    rows: Vec<TabRow>,
+}
+
+#[derive(Serialize)]
+struct TabRow {
+    id: i64,
+    cells: Vec<serde_json::Value>,
+}
+
+async fn tab_rows(
+    State(state): State<Arc<AppState>>,
+    Path((id, tab)): Path<(i64, String)>,
+    Query(params): Query<RowsParams>,
+) -> ApiResult<TabRows> {
+    let rows = read(&state, move |store| {
+        let tab = crawl_tab(store, id, &tab)?;
+        let page = store.url_rows(id, &params.query(&tab))?;
+        Ok(TabRows {
+            total: page.total,
+            rows: page.rows.iter().map(|row| TabRow { id: row.url.id, cells: tabs::cells(&tab.columns, row) }).collect(),
+        })
+    })
+    .await?;
+    Ok(Json(rows))
+}
+
+/// A tab as CSV, every row its filter, search and sort keep; with a BOM so
+/// that Excel reads it as UTF-8.
+async fn export_csv(
+    State(state): State<Arc<AppState>>,
+    Path((id, tab)): Path<(i64, String)>,
+    Query(params): Query<RowsParams>,
+) -> Result<Response, ApiError> {
+    let (bytes, name) = read(&state, move |store| {
+        let tab = crawl_tab(store, id, &tab)?;
+        let mut writer = csv::Writer::from_writer(b"\xEF\xBB\xBF".to_vec());
+        writer.write_record(tab.columns.iter().map(|column| column.title.as_str()))?;
+        let mut query = params.query(&tab);
+        query.offset = 0;
+        query.limit = 2000;
+        loop {
+            let page = store.url_rows(id, &query)?;
+            for row in &page.rows {
+                writer.write_record(tabs::cells(&tab.columns, row).iter().map(tabs::csv_text))?;
+            }
+            query.offset += page.rows.len() as i64;
+            if page.rows.is_empty() || query.offset >= page.total {
+                break;
+            }
+        }
+        let name = match query.filter.as_str() {
+            "all" => tab.key.to_string(),
+            filter => format!("{}-{}", tab.key, filter.trim_start_matches("issue:")),
+        };
+        Ok((writer.into_inner().map_err(|error| anyhow::anyhow!("{error}"))?, name))
+    })
+    .await?;
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, "text/csv; charset=utf-8".to_string()),
+            (axum::http::header::CONTENT_DISPOSITION, format!("attachment; filename=\"{name}-{id}.csv\"")),
+        ],
+        bytes,
+    )
+        .into_response())
 }
 
 /// The overview's charts: counts by group, and issues by severity.
@@ -362,26 +527,32 @@ async fn overview(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> Ap
     Ok(Json(OverviewReply { counts, severities }))
 }
 
-#[derive(Deserialize)]
-struct RowsParams {
-    filter: Option<String>,
-    q: Option<String>,
-    sort: Option<String>,
-    desc: Option<bool>,
-    offset: Option<i64>,
-    limit: Option<i64>,
-}
-
-async fn rows(State(state): State<Arc<AppState>>, Path(id): Path<i64>, Query(params): Query<RowsParams>) -> ApiResult<RowsPage> {
-    let query = RowQuery {
-        filter: params.filter.unwrap_or_else(|| "all".into()),
-        search: params.q,
-        sort: params.sort.unwrap_or_else(|| "url".into()),
-        descending: params.desc.unwrap_or(false),
-        offset: params.offset.unwrap_or(0),
-        limit: params.limit.unwrap_or(200),
-    };
-    Ok(Json(read(&state, move |store| store.url_rows(id, &query)).await?))
+/// Every tab of the crawl as one XLSX workbook, as `seo-spider export`
+/// writes it.
+async fn export_xlsx(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> Result<Response, ApiError> {
+    let db = state.db.clone();
+    let (bytes, start_url) = tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, String)> {
+        let store = Store::open_read(&db)?;
+        let start_url = store.crawls()?.into_iter().find(|crawl| crawl.id == id).map(|crawl| crawl.start_url).unwrap_or_default();
+        let path = std::env::temp_dir().join(format!("seo-spider-export-{}-{id}.xlsx", std::process::id()));
+        let mut sink: Box<dyn seo_export::Sink> = Box::new(seo_export::XlsxSink::new(&path));
+        seo_export::export(&store, id, sink.as_mut())?;
+        sink.finish()?;
+        let bytes = std::fs::read(&path)?;
+        let _ = std::fs::remove_file(&path);
+        Ok((bytes, start_url))
+    })
+    .await
+    .map_err(|error| ApiError(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))??;
+    let host = url::Url::parse(&start_url).ok().and_then(|url| url.host_str().map(str::to_string)).unwrap_or_else(|| "crawl".into());
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string()),
+            (axum::http::header::CONTENT_DISPOSITION, format!("attachment; filename=\"{host}-{id}.xlsx\"")),
+        ],
+        bytes,
+    )
+        .into_response())
 }
 
 /// One URL for the detail panel: the response, the facts of the document

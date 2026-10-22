@@ -15,14 +15,17 @@ seo-page = { workspace = true }
 seo-store = { workspace = true }
 seo-checks = { workspace = true }
 seo-crawl = { workspace = true }
+seo-export = { workspace = true }
 axum = { workspace = true }
 tower-http = { workspace = true }
 futures-util = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+schemars = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
+csv = { workspace = true }
 rust-embed = { workspace = true, optional = true }
 mime_guess = { workspace = true, optional = true }
