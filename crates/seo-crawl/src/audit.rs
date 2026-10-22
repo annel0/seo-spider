@@ -31,6 +31,8 @@ fn meaningful(code: &str, extracted: &ExtractOptions) -> bool {
         "image_alt_missing" | "image_alt_too_long" | "image_too_large" | "picture_missing_img"
         | "image_without_size" => extracted.resources,
         "form_on_http" | "insecure_form" => extracted.forms,
+        "structured_data_parse_error" | "schema_type_unknown" | "schema_property_invalid"
+        | "rich_result_required_missing" | "rich_result_recommended_missing" => extracted.structured_data,
         _ => true,
     }
 }

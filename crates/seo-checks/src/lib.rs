@@ -15,6 +15,7 @@ mod javascript;
 mod lang;
 mod page;
 mod site;
+mod structured;
 #[cfg(test)]
 mod testutil;
 mod urls;
@@ -22,6 +23,7 @@ mod urls;
 pub use catalog::{find, CATALOG};
 pub use page::{check_page, PageInput};
 pub use site::{check_site, site_page, SiteHreflang, SiteLink, SitePage};
+pub use structured::{structured_data, StructuredData};
 
 use serde::Serialize;
 
@@ -53,7 +55,8 @@ pub struct CheckDef {
     pub severity: Severity,
     /// The tab the issue belongs to: `response_codes`, `page_titles`,
     /// `meta_description`, `headings`, `content`, `indexability`, `canonicals`,
-    /// `hreflang`, `links`, `images`, `url`, `security`, `mobile`, `javascript`.
+    /// `hreflang`, `links`, `images`, `url`, `security`, `mobile`,
+    /// `structured_data`, `javascript`.
     pub category: &'static str,
     /// Short name, in Russian.
     pub title: &'static str,

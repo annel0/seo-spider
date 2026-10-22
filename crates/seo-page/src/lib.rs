@@ -5,6 +5,7 @@
 
 mod custom;
 mod extract;
+mod microdata;
 mod stream;
 
 pub use custom::{CustomFacts, CustomRules, ExtractorSpec, Output, SearchScope, SearchSpec};
@@ -26,7 +27,7 @@ pub struct ExtractOptions {
     pub headings: bool,
     /// Visible text: word count and text hash.
     pub text: bool,
-    /// JSON-LD blocks.
+    /// JSON-LD blocks and microdata items.
     pub structured_data: bool,
     pub forms: bool,
     /// Element count and duplicate ids.
@@ -202,6 +203,10 @@ pub struct PageFacts {
     pub text_hash: u64,
     /// `<script type=application/ld+json>` bodies.
     pub json_ld: Vec<String>,
+    /// Microdata items (`itemscope` without `itemprop`), each as a JSON
+    /// object shaped like JSON-LD.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub microdata: Vec<String>,
     /// Length of the serialised document in bytes.
     pub html_bytes: usize,
     /// What the crawl's custom extractors and searches found; filled in by

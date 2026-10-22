@@ -1,7 +1,7 @@
 //! The catalog of every issue the crate can report. 79 entries come from
 //! SEOnaut (same severities: its priority 1/2/3 is High/Medium/Low), five are
 //! additions the Screaming Frog tabs call for, twelve belong to the JavaScript
-//! tab.
+//! tab and five to structured data.
 
 use crate::{CheckDef, Severity};
 use Severity::{High, Low, Medium};
@@ -623,6 +623,42 @@ pub static CATALOG: &[CheckDef] = &[
         "Нет meta viewport",
         "Без meta viewport мобильные браузеры масштабируют страницу как десктопную.",
     ),
+    // ---- structured_data ----
+    def(
+        "structured_data_parse_error",
+        High,
+        "structured_data",
+        "Структурированные данные не читаются",
+        "Блок JSON-LD не является корректным JSON или в нём нет @context schema.org: поисковики его не прочтут.",
+    ),
+    def(
+        "schema_type_unknown",
+        Medium,
+        "structured_data",
+        "Неизвестный тип Schema.org",
+        "Такого @type нет в словаре Schema.org (опечатка или устаревший словарь вроде data-vocabulary.org): поисковики не поймут, что описано.",
+    ),
+    def(
+        "schema_property_invalid",
+        Medium,
+        "structured_data",
+        "Свойство не по Schema.org",
+        "Свойства нет в Schema.org, оно не относится к указанному типу или его значение не того типа: поисковики его проигнорируют.",
+    ),
+    def(
+        "rich_result_required_missing",
+        High,
+        "structured_data",
+        "Нет обязательного свойства расширенного результата",
+        "Google требует это свойство для расширенного результата (товар, рецепт, вакансия, хлебные крошки и т. п.): без него сниппет не расширится.",
+    ),
+    def(
+        "rich_result_recommended_missing",
+        Low,
+        "structured_data",
+        "Нет рекомендуемого свойства расширенного результата",
+        "Google рекомендует это свойство: с ним расширенный результат полнее и заметнее в выдаче.",
+    ),
     // ---- javascript ----
     def(
         "js_title_only_in_rendered",
@@ -744,7 +780,7 @@ mod tests {
 
     use super::*;
 
-    const CATEGORIES: [&str; 14] = [
+    const CATEGORIES: [&str; 15] = [
         "response_codes",
         "page_titles",
         "meta_description",
@@ -758,6 +794,7 @@ mod tests {
         "url",
         "security",
         "mobile",
+        "structured_data",
         "javascript",
     ];
 
@@ -808,10 +845,11 @@ mod tests {
             ("page_titles", 5),
             ("response_codes", 9),
             ("security", 6),
+            ("structured_data", 5),
             ("url", 3),
         ];
         assert_eq!(per_category.into_iter().collect::<Vec<_>>(), expected);
-        assert_eq!(CATALOG.len(), 100);
+        assert_eq!(CATALOG.len(), 105);
     }
 
     #[test]
@@ -850,6 +888,7 @@ mod tests {
             include_str!("page/links.rs"),
             include_str!("page/security.rs"),
             include_str!("javascript.rs"),
+            include_str!("structured.rs"),
             include_str!("site/redirects.rs"),
             include_str!("site/duplicates.rs"),
             include_str!("site/canonicals.rs"),

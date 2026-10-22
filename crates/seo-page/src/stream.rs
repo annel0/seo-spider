@@ -68,6 +68,8 @@ struct State {
     scripts_raw: Vec<String>,
     json_ld: Option<String>,
     json_lds: Vec<String>,
+    /// An element with `itemscope` was read: microdata to parse.
+    microdata: bool,
     iframes_raw: Vec<String>,
     audios_raw: Vec<String>,
     videos_raw: Vec<String>,
@@ -443,6 +445,12 @@ pub fn extract_stream(html: &str, url: &Url, source: Source, options: &ExtractOp
                 Ok(())
             }),
         ];
+        if opts.structured_data {
+            handlers.push(element!("[itemscope]", |_| {
+                s.borrow_mut().microdata = true;
+                Ok(())
+            }));
+        }
         // Landmarks for link positions: pushed here, popped at their end.
         handlers.push(element!("nav, header, footer, aside, [role]", |el| {
             if let Some(kind) = landmark(el) {
@@ -608,6 +616,7 @@ pub fn extract_stream(html: &str, url: &Url, source: Source, options: &ExtractOp
         word_count: if opts.text { st.words } else { 0 },
         text_hash: if opts.text { text_hash } else { 0 },
         json_ld: st.json_lds,
+        microdata: if st.microdata { crate::microdata::items(html, &base) } else { Vec::new() },
         html_bytes: html.len(),
         custom: Default::default(),
     }
@@ -649,6 +658,7 @@ mod tests {
             "text before<title>late title</title><p>after</p>",
             "<svg><title>icon</title></svg><title>real</title><p>body</p>",
             "<p>word<span>glued</span> apart</p><p>&lt;tag&gt; &amp;&amp; &#x41;&#66;</p>",
+            "<base href='/b/'><div itemscope itemtype='https://schema.org/Event'><a itemprop=url href=e>e</a><span itemprop=name>Party</span></div>",
         ] {
             agrees(html);
         }

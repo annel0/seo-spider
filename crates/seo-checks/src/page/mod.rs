@@ -43,6 +43,7 @@ pub fn check_page(input: &PageInput) -> Vec<Issue> {
     indexing::check(&ctx, &mut issues);
     links::check(&ctx, &mut issues);
     security::check(&ctx, &mut issues);
+    crate::structured::check(&ctx, &mut issues);
     javascript::check(input, &mut issues);
     issues
 }

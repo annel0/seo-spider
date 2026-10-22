@@ -102,6 +102,8 @@ pub fn export(store: &Store, crawl_id: i64, sink: &mut dyn Sink) -> Result<Vec<(
     let started = std::time::Instant::now();
     timed("javascript", javascript(store, crawl_id, sink), started)?;
     let started = std::time::Instant::now();
+    timed("structured_data", structured_data(store, crawl_id, sink), started)?;
+    let started = std::time::Instant::now();
     timed("custom", custom(store, crawl_id, sink), started)?;
     let started = std::time::Instant::now();
     timed("links", links(store, crawl_id, sink), started)?;
@@ -446,6 +448,37 @@ fn javascript(store: &Store, crawl_id: i64, sink: &mut dyn Sink) -> Result<usize
             raw.links.len().into(),
             rendered.map_or(Cell::Empty, |facts| facts.links.len().into()),
             only_rendered.into(),
+        ])
+    })?;
+    sink.end()
+}
+
+/// JSON-LD and microdata per internal HTML page: what is marked up, for
+/// which rich results, and what Schema.org and Google's rules find wrong.
+fn structured_data(store: &Store, crawl_id: i64, sink: &mut dyn Sink) -> Result<usize> {
+    sink.begin(
+        "structured_data",
+        &[
+            "Address", "Formats", "Types", "Rich Results", "Errors", "Warnings", "Parse Errors", "Unknown Types",
+            "Invalid Properties", "Missing Required", "Missing Recommended",
+        ],
+    )?;
+    url_rows(store, crawl_id, sink, |url| {
+        let facts = url.facts().filter(|facts| url.internal && facts.extracted.structured_data)?;
+        let report = seo_checks::structured_data(facts);
+        let joined = |list: &[String]| -> Cell { (!list.is_empty()).then(|| list.join("; ")).into() };
+        Some(vec![
+            url.http.url.as_str().into(),
+            report.formats.join(", ").into(),
+            report.types.join(", ").into(),
+            report.features.join(", ").into(),
+            report.errors().into(),
+            report.warnings().into(),
+            joined(&report.parse_errors),
+            joined(&report.unknown_types),
+            joined(&report.invalid_properties),
+            joined(&report.missing_required),
+            joined(&report.missing_recommended),
         ])
     })?;
     sink.end()

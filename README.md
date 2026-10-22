@@ -133,8 +133,24 @@ A rule that does not compile stops the crawl before it starts. Cost on the
 100k-page bench: regex and search nothing measurable, CSS +19% CPU, XPath
 +36% (both parse a DOM).
 
+### Structured data
+
+JSON-LD and microdata (read into the same shape) are checked against the
+Schema.org 30.1 vocabulary (`crates/seo-checks/data/schemaorg.txt`, CC BY-SA
+3.0): unknown types, properties Schema.org does not have or that do not apply
+to the type, nested items of a type the property does not take. Items of the
+rich results Google still shows (product, review, breadcrumbs, FAQ, Q&A,
+recipe, event, job, local business, organization, video, app, dataset, movie,
+forum post, profile, image metadata) are checked for its required and
+recommended properties. The `structured_data` export tab lists, per page,
+the formats, types, rich results, and each problem; the issues are
+`structured_data_parse_error`, `schema_type_unknown`,
+`schema_property_invalid`, `rich_result_required_missing` and
+`rich_result_recommended_missing`. RDFa is not read.
+
 Export tabs: `summary`, `internal`, `external`, `redirects`, `javascript`
-(raw HTML against the rendered DOM), `custom`, `links`, `issues`.
+(raw HTML against the rendered DOM), `structured_data`, `custom`, `links`,
+`issues`.
 
 ## Acceptance site
 

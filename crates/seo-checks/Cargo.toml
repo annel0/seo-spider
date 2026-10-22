@@ -13,3 +13,4 @@ serde = { workspace = true }
 # both are small, pure Rust and do no I/O.
 oxilangtag = "0.1"
 isolang = "2"
+serde_json = { workspace = true }

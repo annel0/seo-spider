@@ -3352,6 +3352,7 @@ dependencies = [
  "oxilangtag",
  "seo-page",
  "serde",
+ "serde_json",
  "url",
 ]
 

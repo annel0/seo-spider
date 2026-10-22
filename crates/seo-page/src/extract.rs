@@ -33,6 +33,7 @@ selector!(FORM, "form");
 selector!(WITH_ID, "[id]");
 selector!(ALL, "*");
 selector!(BODY, "body");
+selector!(ITEMSCOPE, "[itemscope]");
 
 /// Reads the facts of one HTML document fetched from (or rendered at) `url`.
 pub fn extract(html: &str, url: &Url, source: Source) -> PageFacts {
@@ -105,6 +106,7 @@ pub fn extract_tree(html: &str, url: &Url, source: Source, options: &ExtractOpti
         word_count: 0,
         text_hash: 0,
         json_ld: Vec::new(),
+        microdata: Vec::new(),
         html_bytes: html.len(),
         custom: Default::default(),
     };
@@ -301,6 +303,10 @@ pub fn extract_tree(html: &str, url: &Url, source: Source, options: &ExtractOpti
             ids.into_iter().filter(|(_, count)| *count > 1).map(|(id, _)| id.to_string()).collect();
         duplicates.sort();
         facts.duplicate_ids = duplicates;
+    }
+
+    if options.structured_data && document.select(&ITEMSCOPE).next().is_some() {
+        facts.microdata = crate::microdata::items(html, &base);
     }
 
     if options.text {
