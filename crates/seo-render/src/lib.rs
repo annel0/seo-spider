@@ -40,6 +40,10 @@ pub struct RenderConfig {
     pub cache_mb: usize,
     /// GET fetch()/XHR responses are reused for this long across pages.
     pub fetch_cache_ttl: Option<Duration>,
+    /// Layout time a page may spend; past it, layout reads get its last
+    /// layout. Animation set-up that reads geometry after each write lays a
+    /// big page out a hundred times otherwise. `None`: no limit.
+    pub layout_budget: Option<Duration>,
     /// IntersectionObserver sees every target in the viewport, as with the
     /// very tall viewport search engines render with: lazy content loads, and
     /// no layout is computed to measure targets.
@@ -67,6 +71,7 @@ impl Default for RenderConfig {
             cache_static: true,
             cache_mb: 256,
             fetch_cache_ttl: Some(Duration::from_secs(120)),
+            layout_budget: Some(Duration::from_secs(2)),
             intersection_full_viewport: true,
             skip_images: true,
             skip_fonts: true,
@@ -138,6 +143,7 @@ impl RenderPool {
             ("OBSCURA_RESOURCE_CACHE_MIN_TTL_MS", config.cache_static.then(|| (6 * 3600 * 1000).to_string())),
             ("OBSCURA_RESOURCE_CACHE_MB", config.cache_static.then(|| config.cache_mb.to_string())),
             ("OBSCURA_FETCH_CACHE_TTL_MS", config.fetch_cache_ttl.map(|ttl| ttl.as_millis().to_string())),
+            ("OBSCURA_LAYOUT_BUDGET_MS", config.layout_budget.map(|budget| budget.as_millis().to_string())),
             ("OBSCURA_INTERSECTION_FULL_VIEWPORT", config.intersection_full_viewport.then(|| "1".to_string())),
             ("OBSCURA_RENDER_SKIP_IMAGES", config.skip_images.then(|| "1".to_string())),
             ("OBSCURA_RENDER_SKIP_FONTS", config.skip_fonts.then(|| "1".to_string())),

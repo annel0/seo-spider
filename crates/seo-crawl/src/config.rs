@@ -276,6 +276,9 @@ pub struct RenderSettings {
     /// Reuse GET fetch()/XHR responses across pages for this long; `None`
     /// fetches every time.
     pub fetch_cache_ttl_ms: Option<u64>,
+    /// Layout time a page may spend before layout reads get its last
+    /// layout; `None`: no limit.
+    pub layout_budget_ms: Option<u64>,
     /// IntersectionObserver sees every target in the viewport (lazy content
     /// loads, no layout to measure targets).
     pub intersection_full_viewport: bool,
@@ -305,6 +308,7 @@ impl Default for RenderSettings {
             cache_static: render.cache_static,
             cache_mb: render.cache_mb,
             fetch_cache_ttl_ms: render.fetch_cache_ttl.map(|ttl| ttl.as_millis() as u64),
+            layout_budget_ms: render.layout_budget.map(|budget| budget.as_millis() as u64),
             intersection_full_viewport: render.intersection_full_viewport,
             skip_images: render.skip_images,
             skip_fonts: render.skip_fonts,
@@ -335,6 +339,7 @@ impl RenderSettings {
             cache_static: self.cache_static,
             cache_mb: self.cache_mb,
             fetch_cache_ttl: self.fetch_cache_ttl_ms.map(Duration::from_millis),
+            layout_budget: self.layout_budget_ms.map(Duration::from_millis),
             intersection_full_viewport: self.intersection_full_viewport,
             skip_images: self.skip_images,
             skip_fonts: self.skip_fonts,

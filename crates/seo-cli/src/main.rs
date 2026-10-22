@@ -180,6 +180,10 @@ struct CrawlArgs {
     /// Reuse fetch()/XHR responses across rendered pages for this long, ms (0: never).
     #[arg(long)]
     fetch_cache_ttl_ms: Option<u64>,
+    /// Layout time a rendered page may spend, ms; past it, layout reads get
+    /// its last layout (0: no limit).
+    #[arg(long)]
+    layout_budget_ms: Option<u64>,
     /// Measure IntersectionObserver targets for real instead of treating
     /// every target as visible (slower: needs layout).
     #[arg(long)]
@@ -428,6 +432,11 @@ fn crawl_config(args: &CrawlArgs) -> Result<CrawlConfig> {
         match args.fetch_cache_ttl_ms {
             Some(0) => render.fetch_cache_ttl_ms = None,
             Some(ttl) => render.fetch_cache_ttl_ms = Some(ttl),
+            None => {}
+        }
+        match args.layout_budget_ms {
+            Some(0) => render.layout_budget_ms = None,
+            Some(budget) => render.layout_budget_ms = Some(budget),
             None => {}
         }
         // The renderer keeps obscura's browser user agent unless one is
