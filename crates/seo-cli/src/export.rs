@@ -69,7 +69,7 @@ impl From<bool> for Cell {
 
 /// Where tables go, one row at a time.
 pub trait Sink {
-    fn begin(&mut self, name: &'static str, headers: &[&'static str]) -> Result<()>;
+    fn begin(&mut self, name: &'static str, headers: &[&str]) -> Result<()>;
     fn row(&mut self, cells: &[Cell]) -> Result<()>;
     /// Ends the table; returns its rows written.
     fn end(&mut self) -> Result<usize>;
@@ -101,6 +101,8 @@ pub fn export(store: &Store, crawl_id: i64, sink: &mut dyn Sink) -> Result<Vec<(
     timed("redirects", redirects(store, crawl_id, sink), started)?;
     let started = std::time::Instant::now();
     timed("javascript", javascript(store, crawl_id, sink), started)?;
+    let started = std::time::Instant::now();
+    timed("custom", custom(store, crawl_id, sink), started)?;
     let started = std::time::Instant::now();
     timed("links", links(store, crawl_id, sink), started)?;
     let started = std::time::Instant::now();
@@ -449,6 +451,80 @@ fn javascript(store: &Store, crawl_id: i64, sink: &mut dyn Sink) -> Result<usize
     sink.end()
 }
 
+/// Columns a custom extractor gets at most, whatever its `max`.
+const MAX_VALUE_COLUMNS: usize = 20;
+
+/// Custom search and extraction: per internal HTML page, how many times each
+/// search was found and the values each extractor pulled out, from the
+/// document the page was judged by. No sheet when the crawl had none.
+fn custom(store: &Store, crawl_id: i64, sink: &mut dyn Sink) -> Result<usize> {
+    let config: serde_json::Value = serde_json::from_str(&store.crawl_config(crawl_id)?).unwrap_or_default();
+    let named = |kind: &str| -> Vec<(String, usize)> {
+        config["custom"][kind]
+            .as_array()
+            .map(|specs| {
+                specs
+                    .iter()
+                    .filter_map(|spec| {
+                        let max = spec["max"].as_u64().map_or(10, |max| max as usize).clamp(1, MAX_VALUE_COLUMNS);
+                        Some((spec["name"].as_str()?.to_string(), max))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let (searches, mut extractors) = (named("search"), named("extract"));
+    if searches.is_empty() && extractors.is_empty() {
+        return Ok(0);
+    }
+    // As many columns as the most values any page had, within `max`: one
+    // column when every page has one H1, not ten mostly empty ones.
+    let mut most = vec![1usize; extractors.len()];
+    store.for_each_url_chunk(crawl_id, CHUNK, |chunk| {
+        let counts: Vec<Vec<usize>> = chunk
+            .into_par_iter()
+            .map(|encoded| -> Result<_> {
+                let url = encoded.decode()?;
+                let found = url.facts().map(|facts| &facts.custom);
+                Ok(extractors.iter().map(|(name, _)| found.map_or(0, |found| found.values(name).len())).collect())
+            })
+            .collect::<Result<_>>()?;
+        for page in counts {
+            for (most, count) in most.iter_mut().zip(page) {
+                *most = (*most).max(count);
+            }
+        }
+        Ok(())
+    })?;
+    for ((_, columns), most) in extractors.iter_mut().zip(most) {
+        *columns = most.min(*columns);
+    }
+    let mut headers = vec!["Address".to_string(), "Status Code".to_string()];
+    headers.extend(searches.iter().map(|(name, _)| name.clone()));
+    for (name, columns) in &extractors {
+        match columns {
+            1 => headers.push(name.clone()),
+            _ => headers.extend((1..=*columns).map(|at| format!("{name} {at}"))),
+        }
+    }
+    headers.push("Custom Errors".to_string());
+    sink.begin("custom", &headers.iter().map(String::as_str).collect::<Vec<_>>())?;
+    url_rows(store, crawl_id, sink, |url| {
+        let facts = url.facts().filter(|_| url.internal)?;
+        let found = &facts.custom;
+        let mut cells: Vec<Cell> = vec![url.http.url.as_str().into(), Cell::Int(url.http.status.into())];
+        cells.extend(searches.iter().map(|(name, _)| found.count(name).map_or(Cell::Empty, Cell::from)));
+        for (name, columns) in &extractors {
+            let values = found.values(name);
+            cells.extend((0..*columns).map(|at| values.get(at).map_or(Cell::Empty, |value| value.as_str().into())));
+        }
+        let errors: Vec<String> = found.errors.iter().map(|(name, error)| format!("{name}: {error}")).collect();
+        cells.push((!errors.is_empty()).then(|| errors.join("; ")).into());
+        Some(cells)
+    })?;
+    sink.end()
+}
+
 /// Every link of every page, from the document the page was judged by,
 /// with the status of its target when the crawl requested it.
 fn links(store: &Store, crawl_id: i64, sink: &mut dyn Sink) -> Result<usize> {
@@ -547,7 +623,7 @@ impl CsvSink {
 }
 
 impl Sink for CsvSink {
-    fn begin(&mut self, name: &'static str, headers: &[&'static str]) -> Result<()> {
+    fn begin(&mut self, name: &'static str, headers: &[&str]) -> Result<()> {
         let mut writer = csv::Writer::from_path(self.dir.join(format!("{name}.csv")))?;
         writer.write_record(headers)?;
         self.writer = Some(writer);
@@ -611,7 +687,7 @@ impl XlsxSink {
 }
 
 impl Sink for XlsxSink {
-    fn begin(&mut self, name: &'static str, headers: &[&'static str]) -> Result<()> {
+    fn begin(&mut self, name: &'static str, headers: &[&str]) -> Result<()> {
         let bold = self.bold.clone();
         let sheet = self.workbook.add_worksheet_with_constant_memory();
         sheet.set_name(name)?;

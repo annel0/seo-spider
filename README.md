@@ -91,8 +91,50 @@ renders the page the crawler downloaded instead of requesting it again
 crawler's user agent). Ctrl-C stops a crawl and keeps what it got. See
 `seo-spider crawl --help`.
 
+### Custom extraction and search
+
+Values pulled out of every internal HTML page, and text counted on it, as in
+Screaming Frog. On the command line:
+
+```
+seo-spider crawl https://example.com/ \
+  --extract-css 'price=.product .price' \
+  --extract-xpath 'author=//meta[@name="author"]/@content' \
+  --extract-xpath 'images=count(//img)' \
+  --extract-regex 'gtm=(GTM-[A-Z0-9]+)' \
+  --search 'out of stock=нет в наличии' --search-regex 'phone=\+7[\d ()-]{10,}'
+```
+
+In `--config`, with attributes, HTML output and a search in the visible
+text:
+
+```toml
+[[custom.extract]]
+name = "og image"
+css = 'meta[property="og:image"]'
+attribute = "content"
+max = 1                 # values per page (10 by default)
+
+[[custom.extract]]
+name = "first paragraph"
+xpath = "(//main//p)[1]"
+output = "html"         # text (default), html or inner_html
+
+[[custom.search]]
+name = "sale"
+text = "скидка"         # any case; or regex = "..."
+scope = "text"          # html (default) or text
+```
+
+The rules run on the raw document and, when pages are rendered, on the
+rendered one; the `custom` export tab shows the document each page was
+judged by, a column per search (how many times it was found) and per value.
+A rule that does not compile stops the crawl before it starts. Cost on the
+100k-page bench: regex and search nothing measurable, CSS +19% CPU, XPath
++36% (both parse a DOM).
+
 Export tabs: `summary`, `internal`, `external`, `redirects`, `javascript`
-(raw HTML against the rendered DOM), `links`, `issues`.
+(raw HTML against the rendered DOM), `custom`, `links`, `issues`.
 
 ## Acceptance site
 

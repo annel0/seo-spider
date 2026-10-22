@@ -46,7 +46,11 @@ zstd = "0.13"
 toml = "0.8"
 rayon = "1"
 rustc-hash = "2"
-scraper = "0.20"
+# Attributes kept in source order, so extracted HTML reads as written.
+scraper = { version = "0.20", features = ["deterministic"] }
+# XPath 1.0 for custom extraction, evaluated on a copy of the scraper DOM.
+sxd-document = "0.3"
+sxd-xpath = "0.4"
 lol_html = "2"
 htmlize = { version = "1", features = ["unescape"] }
 rusqlite = { version = "0.32", features = ["bundled"] }

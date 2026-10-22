@@ -3,9 +3,11 @@
 //! out of the rendered DOM, so checks run on either and the JavaScript tab is a
 //! diff of the two.
 
+mod custom;
 mod extract;
 mod stream;
 
+pub use custom::{CustomFacts, CustomRules, ExtractorSpec, Output, SearchScope, SearchSpec};
 pub use extract::{extract, extract_tree, extract_with};
 pub use stream::extract_stream;
 
@@ -202,6 +204,10 @@ pub struct PageFacts {
     pub json_ld: Vec<String>,
     /// Length of the serialised document in bytes.
     pub html_bytes: usize,
+    /// What the crawl's custom extractors and searches found; filled in by
+    /// the crawler, which holds the rules.
+    #[serde(default, skip_serializing_if = "CustomFacts::is_empty")]
+    pub custom: CustomFacts,
 }
 
 impl PageFacts {

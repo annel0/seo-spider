@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use seo_page::ExtractOptions;
+use seo_page::{ExtractOptions, ExtractorSpec, SearchSpec};
 use url::Url;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +51,17 @@ pub struct CrawlConfig {
     pub store: StoreOptions,
     /// Render HTML pages with JavaScript; absent reads the raw HTML only.
     pub render: Option<RenderSettings>,
+    /// Values pulled out of every internal HTML page, and text counted on it.
+    pub custom: CustomSettings,
+}
+
+/// Custom extraction and search (`[[custom.extract]]`, `[[custom.search]]`):
+/// run on the raw document and, when pages are rendered, on the rendered one.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CustomSettings {
+    pub extract: Vec<ExtractorSpec>,
+    pub search: Vec<SearchSpec>,
 }
 
 impl Default for CrawlConfig {
@@ -76,6 +87,7 @@ impl Default for CrawlConfig {
             extract: ExtractOptions::default(),
             store: StoreOptions::default(),
             render: None,
+            custom: CustomSettings::default(),
         }
     }
 }

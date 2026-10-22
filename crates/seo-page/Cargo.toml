@@ -13,6 +13,9 @@ rustc-hash = { workspace = true }
 url = { workspace = true }
 serde = { workspace = true }
 xxhash-rust = { workspace = true }
+regex = { workspace = true }
+sxd-document = { workspace = true }
+sxd-xpath = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

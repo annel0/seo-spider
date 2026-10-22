@@ -286,6 +286,11 @@ impl Store {
         Ok(())
     }
 
+    /// The settings a crawl ran with, as JSON.
+    pub fn crawl_config(&self, crawl_id: i64) -> Result<String> {
+        Ok(self.conn.query_row("SELECT config FROM crawls WHERE id = ?1", params![crawl_id], |row| row.get(0))?)
+    }
+
     /// The most recent crawl in the file.
     pub fn last_crawl(&self) -> Result<Option<i64>> {
         Ok(self

@@ -96,6 +96,9 @@ pub async fn crawl_with(
     for change in config.resolve() {
         tracing::info!("setting turned on: {change}");
     }
+    // Checked before the crawl is recorded: a bad selector stops it at once.
+    let custom = seo_page::CustomRules::compile(&config.custom.extract, &config.custom.search)
+        .map_err(|error| anyhow::anyhow!("custom extraction: {error}"))?;
     let options = fetch::ClientOptions {
         user_agent: &config.http.user_agent,
         timeout: config.http.timeout(),
@@ -168,6 +171,7 @@ pub async fn crawl_with(
             _ => ExtractOptions::head_only(),
         },
         extract: config.extract,
+        custom,
         store: config.store.clone(),
         rules: Rules {
             scope: Scope::new(&config.start_urls, config.crawl_subdomains),
@@ -443,6 +447,8 @@ struct Ctx {
     raw_extract: ExtractOptions,
     /// What is read from the rendered DOM.
     extract: ExtractOptions,
+    /// Custom extraction and search, when any is set.
+    custom: Option<seo_page::CustomRules>,
     store: StoreOptions,
     rules: Rules,
 }
@@ -750,7 +756,10 @@ async fn process(ctx: Arc<Ctx>, item: Item) -> Outcome {
         body: body.bytes.clone(),
     });
     let raw = body.map(|body| {
-        let facts = seo_page::extract_with(&body.html, &item.url, Source::Raw, &ctx.raw_extract);
+        let mut facts = seo_page::extract_with(&body.html, &item.url, Source::Raw, &ctx.raw_extract);
+        if let Some(rules) = &ctx.custom {
+            facts.custom = rules.run(&body.html);
+        }
         if ctx.store.raw_html {
             raw_body = Some(pack(body.bytes, ctx.store.compression_level));
         }
@@ -886,7 +895,10 @@ async fn render_page(
         rendered;
     let (document, body) = if error.is_none() {
         let base = Url::parse(&final_url).unwrap_or_else(|_| url.clone());
-        let facts = seo_page::extract_with(&html, &base, Source::Rendered, &ctx.extract);
+        let mut facts = seo_page::extract_with(&html, &base, Source::Rendered, &ctx.extract);
+        if let Some(rules) = &ctx.custom {
+            facts.custom = rules.run(&html);
+        }
         let body = ctx.store.rendered_html.then(|| pack(html.into_bytes(), ctx.store.compression_level));
         (Some(document(facts, ctx.store.compression_level)), body)
     } else {

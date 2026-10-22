@@ -172,6 +172,26 @@ struct CrawlArgs {
     #[arg(long = "header")]
     headers: Vec<String>,
 
+    /// Custom extraction by CSS selector, `name=selector`: the text of each
+    /// match (repeatable; attributes and HTML output in --config).
+    #[arg(long = "extract-css", value_name = "NAME=SELECTOR")]
+    extract_css: Vec<String>,
+    /// Custom extraction by XPath 1.0, `name=expression` (`//a/@href`,
+    /// `count(//img)`; repeatable).
+    #[arg(long = "extract-xpath", value_name = "NAME=XPATH")]
+    extract_xpath: Vec<String>,
+    /// Custom extraction by regex over the HTML, `name=pattern`: the first
+    /// group, or the whole match (repeatable).
+    #[arg(long = "extract-regex", value_name = "NAME=PATTERN")]
+    extract_regex: Vec<String>,
+    /// Custom search, `name=text`: how many times the text (any case) is
+    /// in each page's HTML (repeatable).
+    #[arg(long = "search", value_name = "NAME=TEXT")]
+    search: Vec<String>,
+    /// Custom search by regex over the HTML, `name=pattern` (repeatable).
+    #[arg(long = "search-regex", value_name = "NAME=PATTERN")]
+    search_regex: Vec<String>,
+
     /// Render pages with JavaScript on this many threads (0: raw HTML only).
     #[arg(long)]
     render_threads: Option<usize>,
@@ -440,6 +460,37 @@ fn crawl_config(args: &CrawlArgs) -> Result<CrawlConfig> {
     for header in &args.headers {
         let (name, value) = header.split_once(':').with_context(|| format!("header {header:?} is not `Name: value`"))?;
         config.http.headers.insert(name.trim().to_string(), value.trim().to_string());
+    }
+    let named = |flag: &str, value: &str| -> Result<(String, String)> {
+        let (name, expression) =
+            value.split_once('=').with_context(|| format!("--{flag} {value:?} is not `name=expression`"))?;
+        Ok((name.trim().to_string(), expression.to_string()))
+    };
+    for (flag, values) in [("extract-css", &args.extract_css), ("extract-xpath", &args.extract_xpath), ("extract-regex", &args.extract_regex)] {
+        for value in values {
+            let (name, expression) = named(flag, value)?;
+            config.custom.extract.push(seo_page::ExtractorSpec {
+                name,
+                css: (flag == "extract-css").then(|| expression.clone()),
+                xpath: (flag == "extract-xpath").then(|| expression.clone()),
+                regex: (flag == "extract-regex").then_some(expression),
+                attribute: None,
+                output: seo_page::Output::Text,
+                max: 10,
+            });
+        }
+    }
+    for (flag, values) in [("search", &args.search), ("search-regex", &args.search_regex)] {
+        for value in values {
+            let (name, expression) = named(flag, value)?;
+            let regex = flag == "search-regex";
+            config.custom.search.push(seo_page::SearchSpec {
+                name,
+                text: (!regex).then(|| expression.clone()),
+                regex: regex.then_some(expression),
+                scope: seo_page::SearchScope::Html,
+            });
+        }
     }
     match args.render_threads {
         Some(0) => config.render = None,

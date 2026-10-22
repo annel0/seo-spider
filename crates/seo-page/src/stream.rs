@@ -609,6 +609,7 @@ pub fn extract_stream(html: &str, url: &Url, source: Source, options: &ExtractOp
         text_hash: if opts.text { text_hash } else { 0 },
         json_ld: st.json_lds,
         html_bytes: html.len(),
+        custom: Default::default(),
     }
 }
 

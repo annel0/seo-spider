@@ -106,6 +106,7 @@ pub fn extract_tree(html: &str, url: &Url, source: Source, options: &ExtractOpti
         text_hash: 0,
         json_ld: Vec::new(),
         html_bytes: html.len(),
+        custom: Default::default(),
     };
 
     for title in document.select(&TITLE) {
@@ -311,7 +312,7 @@ pub fn extract_tree(html: &str, url: &Url, source: Source, options: &ExtractOpti
 }
 
 /// Visible text of `<body>`, whitespace-collapsed.
-fn visible_text(document: &Html) -> String {
+pub(crate) fn visible_text(document: &Html) -> String {
     let Some(body) = document.select(&BODY).next() else {
         return String::new();
     };
