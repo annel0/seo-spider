@@ -9,6 +9,7 @@ license.workspace = true
 seo-page = { workspace = true }
 rusqlite = { workspace = true }
 serde_json = { workspace = true }
+serde = { workspace = true }
 anyhow = { workspace = true }
 zstd = { workspace = true }
 

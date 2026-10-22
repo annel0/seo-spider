@@ -4,6 +4,10 @@
 
 use std::path::Path;
 
+mod view;
+
+pub use view::{CrawlInfo, RowQuery, RowsPage, UrlRow, FILTERS};
+
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use seo_page::{HttpInfo, PageFacts, RenderSummary};
@@ -248,7 +252,9 @@ impl BodyKind {
 pub enum Write {
     /// A response. The crawl assigns ids itself (see `next_url_id`) so it
     /// never waits for the database to learn one.
-    Response { id: i64, http: HttpInfo, internal: bool },
+    /// `depth` is the clicks from a start URL as the crawl found it; the
+    /// crawl's end (`set_crawl_states`) settles it.
+    Response { id: i64, http: HttpInfo, internal: bool, depth: Option<u32> },
     /// Facts of one document of a URL, with `PageFacts` already encoded by
     /// `encode_facts`; `links` also stores its outgoing links as rows.
     Facts { url_id: i64, facts: Box<PageFacts>, data: Vec<u8>, links: bool },
@@ -333,8 +339,8 @@ impl Store {
         let tx = self.conn.transaction()?;
         {
             let mut response = tx.prepare_cached(
-                "INSERT INTO urls (id, crawl_id, url, status, location, content_type, ttfb_ms, size, error, headers, internal)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                "INSERT INTO urls (id, crawl_id, url, status, location, content_type, ttfb_ms, size, error, headers, internal, depth)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             )?;
             let mut facts_row = tx.prepare_cached(
                 "INSERT OR REPLACE INTO facts
@@ -357,7 +363,7 @@ impl Store {
                 tx.prepare_cached("INSERT INTO issues (crawl_id, url_id, code, detail) VALUES (?1, ?2, ?3, ?4)")?;
             for write in writes {
                 match write {
-                    Write::Response { id, http, internal } => {
+                    Write::Response { id, http, internal, depth } => {
                         response.execute(params![
                             id,
                             crawl_id,
@@ -370,6 +376,7 @@ impl Store {
                             http.error,
                             serde_json::to_string(&http.headers)?,
                             internal,
+                            depth,
                         ])?;
                     }
                     Write::Facts { url_id, facts, data, links } => {
@@ -496,48 +503,11 @@ impl Store {
         chunk: usize,
         mut each: impl FnMut(Vec<EncodedUrl>) -> Result<()>,
     ) -> Result<()> {
-        let mut select = self.conn.prepare(
-            "SELECT u.id, u.url, u.status, u.location, u.content_type, u.ttfb_ms, u.size, u.error, u.headers,
-                    u.depth, u.in_sitemap, u.blocked_by_robots, u.internal, raw.data, rendered.data,
-                    r.url_id, r.error, r.settled, r.console_errors, r.resources
-             FROM urls u
-             LEFT JOIN facts raw ON raw.url_id = u.id AND raw.source = 'raw'
-             LEFT JOIN facts rendered ON rendered.url_id = u.id AND rendered.source = 'rendered'
-             LEFT JOIN renders r ON r.url_id = u.id
-             WHERE u.crawl_id = ?1 ORDER BY u.id",
-        )?;
+        let mut select = self.conn.prepare(&format!("{SELECT_URL} WHERE u.crawl_id = ?1 ORDER BY u.id"))?;
         let mut rows = select.query(params![crawl_id])?;
         let mut batch = Vec::with_capacity(chunk);
         while let Some(row) = rows.next()? {
-            let headers: String = row.get(8)?;
-            batch.push(EncodedUrl {
-                url: StoredUrl {
-                    id: row.get(0)?,
-                    http: HttpInfo {
-                        url: row.get(1)?,
-                        status: row.get(2)?,
-                        location: row.get(3)?,
-                        content_type: row.get(4)?,
-                        ttfb_ms: row.get(5)?,
-                        size: row.get::<_, i64>(6)? as u64,
-                        error: row.get(7)?,
-                        headers: serde_json::from_str(&headers).unwrap_or_default(),
-                    },
-                    internal: row.get(12)?,
-                    depth: row.get(9)?,
-                    in_sitemap: row.get(10)?,
-                    blocked_by_robots: row.get(11)?,
-                    raw: None,
-                    rendered: None,
-                    render: None,
-                },
-                raw: row.get(13)?,
-                rendered: row.get(14)?,
-                render: match row.get::<_, Option<i64>>(15)? {
-                    Some(_) => Some((row.get(16)?, row.get(17)?, row.get(18)?, row.get(19)?)),
-                    None => None,
-                },
-            });
+            batch.push(encoded_url(row)?);
             if batch.len() >= chunk {
                 each(std::mem::replace(&mut batch, Vec::with_capacity(chunk)))?;
             }
@@ -548,10 +518,58 @@ impl Store {
         Ok(())
     }
 
+    /// One URL with its facts decoded.
+    pub fn url(&self, id: i64) -> Result<Option<StoredUrl>> {
+        let mut select = self.conn.prepare_cached(&format!("{SELECT_URL} WHERE u.id = ?1"))?;
+        let mut rows = select.query(params![id])?;
+        rows.next()?.map(|row| encoded_url(row)?.decode()).transpose()
+    }
+
     /// Raw access for exports and ad-hoc queries.
     pub fn connection(&self) -> &Connection {
         &self.conn
     }
+}
+
+/// A URL with its documents' facts and render, as `encoded_url` reads it.
+const SELECT_URL: &str = "SELECT u.id, u.url, u.status, u.location, u.content_type, u.ttfb_ms, u.size, u.error, u.headers,
+        u.depth, u.in_sitemap, u.blocked_by_robots, u.internal, raw.data, rendered.data,
+        r.url_id, r.error, r.settled, r.console_errors, r.resources
+    FROM urls u
+    LEFT JOIN facts raw ON raw.url_id = u.id AND raw.source = 'raw'
+    LEFT JOIN facts rendered ON rendered.url_id = u.id AND rendered.source = 'rendered'
+    LEFT JOIN renders r ON r.url_id = u.id";
+
+fn encoded_url(row: &rusqlite::Row<'_>) -> Result<EncodedUrl> {
+    let headers: String = row.get(8)?;
+    Ok(EncodedUrl {
+        url: StoredUrl {
+            id: row.get(0)?,
+            http: HttpInfo {
+                url: row.get(1)?,
+                status: row.get(2)?,
+                location: row.get(3)?,
+                content_type: row.get(4)?,
+                ttfb_ms: row.get(5)?,
+                size: row.get::<_, i64>(6)? as u64,
+                error: row.get(7)?,
+                headers: serde_json::from_str(&headers).unwrap_or_default(),
+            },
+            internal: row.get(12)?,
+            depth: row.get(9)?,
+            in_sitemap: row.get(10)?,
+            blocked_by_robots: row.get(11)?,
+            raw: None,
+            rendered: None,
+            render: None,
+        },
+        raw: row.get(13)?,
+        rendered: row.get(14)?,
+        render: match row.get::<_, Option<i64>>(15)? {
+            Some(_) => Some((row.get(16)?, row.get(17)?, row.get(18)?, row.get(19)?)),
+            None => None,
+        },
+    })
 }
 
 #[cfg(test)]
@@ -587,7 +605,7 @@ mod tests {
             .apply(
                 crawl,
                 &[
-                    Write::Response { id, http, internal: true },
+                    Write::Response { id, http, internal: true, depth: Some(0) },
                     Write::Facts { url_id: id, facts: Box::new(facts), data, links: true },
                     Write::Body { url_id: id, kind: BodyKind::Raw, encoding: "identity", size: 2, data: b"ok".to_vec() },
                 ],

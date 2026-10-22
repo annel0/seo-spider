@@ -6,6 +6,7 @@ members = [
     "crates/seo-store",
     "crates/seo-render",
     "crates/seo-crawl",
+    "crates/seo-server",
     "crates/seo-cli",
     "tools/bench-site",
 ]
@@ -24,6 +25,7 @@ seo-checks = { path = "crates/seo-checks" }
 seo-store = { path = "crates/seo-store" }
 seo-render = { path = "crates/seo-render" }
 seo-crawl = { path = "crates/seo-crawl" }
+seo-server = { path = "crates/seo-server" }
 # The obscura fork (annel0/obscura, branch fix/chrome-parity) checked out
 # next to this repository.
 obscura-browser = { path = "../obscura/crates/obscura-browser", features = ["render"] }
@@ -60,6 +62,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 rust_xlsxwriter = { version = "0.79", features = ["constant_memory"] }
 csv = "1"
+# The web UI server.
+axum = "0.8"
+tower-http = { version = "0.6", features = ["fs"] }
+futures-util = "0.3"
+rust-embed = "8"
+mime_guess = "2"
 
 # obscura pins two crates to its vendored copies; every workspace that builds
 # obscura must repeat the patches or it compiles against the upstream crates.

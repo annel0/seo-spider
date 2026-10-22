@@ -452,6 +452,16 @@ impl RenderSettings {
     }
 }
 
+/// localhost, loopback, private and link-local addresses.
+pub fn is_private_host(url: &Url) -> bool {
+    match url.host() {
+        Some(url::Host::Domain(domain)) => domain == "localhost" || domain.ends_with(".localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback() || ip.is_unique_local(),
+        None => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -51,6 +51,23 @@ enum Command {
     Report(CheckArgs),
     /// Pages whose rendered documents differ between two crawls.
     Compare(CompareArgs),
+    /// The web UI: start, watch and read crawls in a browser.
+    Ui(UiArgs),
+}
+
+#[derive(clap::Args)]
+struct UiArgs {
+    /// The crawl file the UI works on.
+    #[arg(long, default_value = "crawl.sqlite")]
+    db: PathBuf,
+    #[arg(long, default_value = "127.0.0.1:7070")]
+    bind: std::net::SocketAddr,
+    /// The built UI (ui/dist); by default the one built into the binary.
+    #[arg(long)]
+    ui_dir: Option<PathBuf>,
+    /// Required on API requests; needed to listen anywhere but localhost.
+    #[arg(long)]
+    token: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -337,6 +354,10 @@ fn main() -> Result<()> {
             let crawl_id = crawl_id(&store, args.crawl)?;
             report::report(&store, crawl_id)
         }
+        Command::Ui(args) => {
+            let options = seo_server::ServerOptions { db: args.db, bind: args.bind, ui_dir: args.ui_dir, token: args.token };
+            tokio::runtime::Runtime::new()?.block_on(seo_server::serve(options))
+        }
         Command::Compare(args) => {
             let first = Store::open(&args.first)?;
             let second = Store::open(&args.second)?;
@@ -551,7 +572,7 @@ fn crawl_config(args: &CrawlArgs) -> Result<CrawlConfig> {
             render.user_agent = Some(user_agent.clone());
         }
         render.allow_private_network |=
-            args.allow_private_network || config.start_urls.iter().any(is_private_host);
+            args.allow_private_network || config.start_urls.iter().any(seo_crawl::is_private_host);
     }
     match args.store_html {
         Some(StoreHtml::Raw) => config.store.raw_html = true,
@@ -651,15 +672,6 @@ fn crawl(args: CrawlArgs) -> Result<()> {
     std::process::exit(0);
 }
 
-/// localhost, loopback, private and link-local addresses.
-fn is_private_host(url: &Url) -> bool {
-    match url.host() {
-        Some(url::Host::Domain(domain)) => domain == "localhost" || domain.ends_with(".localhost"),
-        Some(url::Host::Ipv4(ip)) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
-        Some(url::Host::Ipv6(ip)) => ip.is_loopback() || ip.is_unique_local(),
-        None => false,
-    }
-}
 
 fn crawl_id(store: &Store, crawl: Option<i64>) -> Result<i64> {
     match crawl {

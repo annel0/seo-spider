@@ -28,7 +28,7 @@ use tokio::task::JoinSet;
 use url::Url;
 
 pub use audit::run_checks;
-pub use config::{CrawlConfig, FetchLevel, HttpConfig, RenderSettings, StoreOptions};
+pub use config::{is_private_host, CrawlConfig, FetchLevel, HttpConfig, RenderSettings, StoreOptions};
 pub use seo_page::ExtractOptions;
 pub use seo_render::{RenderConfig, SettlePolicy};
 
@@ -54,6 +54,8 @@ pub struct CrawlSummary {
 /// Where a running crawl is, as `CrawlControl::progress` reports it.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CrawlProgress {
+    /// The crawl's id in the store, sent as soon as it is recorded.
+    pub crawl_id: i64,
     /// URLs recorded so far.
     pub urls: usize,
     pub pages: usize,
@@ -80,6 +82,25 @@ pub struct CrawlControl {
     pub pause: Arc<AtomicBool>,
     pub progress: Option<tokio::sync::watch::Sender<CrawlProgress>>,
     pub live_issues: bool,
+}
+
+/// How often a crawl with a progress channel reports.
+const REPORT_EVERY: Duration = Duration::from_millis(250);
+
+fn progress_of(summary: &CrawlSummary, queued: usize, in_flight: usize, started: Instant, paused: bool) -> CrawlProgress {
+    CrawlProgress {
+        crawl_id: summary.crawl_id,
+        urls: summary.urls,
+        pages: summary.pages,
+        rendered: summary.rendered,
+        errors: summary.errors,
+        queued,
+        in_flight,
+        bytes: summary.bytes,
+        elapsed: started.elapsed(),
+        stopping: summary.stopped,
+        paused,
+    }
 }
 
 /// Crawls into `store` as `config` says, then hands the store back.
@@ -123,6 +144,9 @@ pub async fn crawl_with(
     let no_headers = BTreeMap::new();
     let external_client = fetch::client(&fetch::ClientOptions { headers: &no_headers, ..options })?;
     let crawl_id = store.start_crawl(config.start_urls[0].as_str(), &serde_json::to_string(&config)?)?;
+    if let Some(progress) = &progress {
+        progress.send_replace(CrawlProgress { crawl_id, ..CrawlProgress::default() });
+    }
     let base_id = store.next_url_id()?;
     let writer = writer::Writer::spawn(store, crawl_id)?;
 
@@ -296,7 +320,7 @@ pub async fn crawl_with(
                             frontier.known[item.index].saved = true;
                             summary.urls += 1;
                             let id = base_id + item.index as i64;
-                            writer.send(Write::Response { id, http, internal: true }).await?;
+                            writer.send(Write::Response { id, http, internal: true, depth: Some(item.depth) }).await?;
                             continue;
                         }
                     }
@@ -314,24 +338,28 @@ pub async fn crawl_with(
             // of taking the empty task set for the end of the crawl.
             if tasks.is_empty() && pause.load(Ordering::Relaxed) && !stop.load(Ordering::Relaxed) {
                 if let Some(progress) = &progress {
-                    progress.send_replace(CrawlProgress {
-                        urls: summary.urls,
-                        pages: summary.pages,
-                        rendered: summary.rendered,
-                        errors: summary.errors,
-                        queued: frontier.queued(),
-                        in_flight: 0,
-                        bytes: summary.bytes,
-                        elapsed: started.elapsed(),
-                        stopping: false,
-                        paused: true,
-                    });
+                    progress.send_replace(progress_of(&summary, frontier.queued(), 0, started, true));
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             }
             let waited = Instant::now();
-            let Some(joined) = tasks.join_next_with_id().await else { break };
+            // With a progress channel, wait at most a report interval: a crawl
+            // waiting on a slow request still reports.
+            let joined = match &progress {
+                Some(progress) => match tokio::time::timeout(REPORT_EVERY, tasks.join_next_with_id()).await {
+                    Ok(joined) => joined,
+                    Err(_) => {
+                        waiting += waited.elapsed();
+                        last_report = Instant::now();
+                        let paused = pause.load(Ordering::Relaxed);
+                        progress.send_replace(progress_of(&summary, frontier.queued(), tasks.len(), started, paused));
+                        continue;
+                    }
+                },
+                None => tasks.join_next_with_id().await,
+            };
+            let Some(joined) = joined else { break };
             waiting += waited.elapsed();
             let mut outcome = match joined {
                 Ok((id, outcome)) => {
@@ -352,7 +380,7 @@ pub async fn crawl_with(
                     frontier.known[index].saved = true;
                     summary.urls += 1;
                     summary.errors += 1;
-                    writer.send(Write::Response { id: base_id + index as i64, http, internal }).await?;
+                    writer.send(Write::Response { id: base_id + index as i64, http, internal, depth: None }).await?;
                     continue;
                 }
             };
@@ -379,20 +407,10 @@ pub async fn crawl_with(
             let stored = Instant::now();
             record(&writer, base_id, outcome, config.store.links, &mut frontier, &mut summary).await?;
             storing += stored.elapsed();
-            if let Some(progress) = progress.as_ref().filter(|_| last_report.elapsed() >= Duration::from_millis(250)) {
+            if let Some(progress) = progress.as_ref().filter(|_| last_report.elapsed() >= REPORT_EVERY) {
                 last_report = Instant::now();
-                progress.send_replace(CrawlProgress {
-                    urls: summary.urls,
-                    pages: summary.pages,
-                    rendered: summary.rendered,
-                    errors: summary.errors,
-                    queued: frontier.queued(),
-                    in_flight: tasks.len(),
-                    bytes: summary.bytes,
-                    elapsed: started.elapsed(),
-                    stopping: summary.stopped,
-                    paused: pause.load(Ordering::Relaxed),
-                });
+                let paused = pause.load(Ordering::Relaxed);
+                progress.send_replace(progress_of(&summary, frontier.queued(), tasks.len(), started, paused));
             }
             // The log line stands in for progress nobody else reports.
             if progress.is_none() && last_progress.elapsed() >= Duration::from_secs(2) {
@@ -410,18 +428,7 @@ pub async fn crawl_with(
     }
     .await;
     if let Some(progress) = &progress {
-        progress.send_replace(CrawlProgress {
-            urls: summary.urls,
-            pages: summary.pages,
-            rendered: summary.rendered,
-            errors: summary.errors,
-            queued: 0,
-            in_flight: 0,
-            bytes: summary.bytes,
-            elapsed: started.elapsed(),
-            stopping: summary.stopped,
-            paused: false,
-        });
+        progress.send_replace(progress_of(&summary, 0, 0, started, false));
     }
     let loop_done = Instant::now();
     let finished = writer.finish();
@@ -1013,7 +1020,7 @@ async fn record(
         summary.errors += 1;
     }
     summary.bytes += bytes_read;
-    writer.send(Write::Response { id: url_id, http, internal: item.internal }).await?;
+    writer.send(Write::Response { id: url_id, http, internal: item.internal, depth: Some(item.depth) }).await?;
     if !issues.is_empty() {
         writer.send(Write::Issues { url_id, issues }).await?;
     }

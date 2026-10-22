@@ -9,11 +9,16 @@ license.workspace = true
 name = "seo-spider"
 path = "src/main.rs"
 
+[features]
+# The web UI inside the binary (build ui/ first).
+embed-ui = ["seo-server/embed-ui"]
+
 [dependencies]
 seo-page = { workspace = true }
 seo-crawl = { workspace = true }
 seo-store = { workspace = true }
 seo-checks = { workspace = true }
+seo-server = { workspace = true }
 rusqlite = { workspace = true }
 rayon = { workspace = true }
 mimalloc = { workspace = true }
