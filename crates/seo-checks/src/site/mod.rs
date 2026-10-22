@@ -5,6 +5,7 @@
 mod canonicals;
 mod duplicates;
 mod linking;
+mod near_duplicates;
 mod redirects;
 
 use std::collections::HashMap;
@@ -61,6 +62,8 @@ pub struct SitePage {
     pub hreflangs: Vec<SiteHreflang>,
     /// Hash of the visible text; `None` when the page has no text.
     pub text_hash: Option<u64>,
+    /// MinHash signature of the main content, for near duplicates.
+    pub minhash: Option<Vec<u16>>,
     /// `noindex` in a meta tag or `X-Robots-Tag`.
     pub noindex: bool,
     pub blocked_by_robots: bool,
@@ -119,6 +122,7 @@ pub fn site_page(
             .map(|item| SiteHreflang { lang: item.lang, href: item.href })
             .collect(),
         text_hash: facts.filter(|facts| facts.word_count > 0).map(|facts| facts.text_hash),
+        minhash: facts.filter(|facts| !facts.minhash.is_empty()).map(|facts| facts.minhash.clone()),
         noindex: robots.noindex(),
         blocked_by_robots: false,
         depth,
@@ -193,14 +197,34 @@ impl SitePage {
     }
 }
 
+/// Settings of the cross-page checks.
+#[derive(Debug, Clone, Copy)]
+pub struct SiteOptions {
+    /// Near duplicates: the estimated share of main-content shingles two
+    /// pages have in common, at or above which both are reported.
+    pub near_duplicate_threshold: f64,
+}
+
+impl Default for SiteOptions {
+    fn default() -> Self {
+        SiteOptions { near_duplicate_threshold: 0.9 }
+    }
+}
+
+/// Runs every cross-page check with the default settings.
+pub fn check_site(pages: &[SitePage]) -> Vec<(usize, Issue)> {
+    check_site_with(pages, &SiteOptions::default())
+}
+
 /// Runs every cross-page check. Returns the index into `pages` and the issue,
 /// ordered by page and, within a page, by check. Pages marked `external` are
 /// only looked at as link targets.
-pub fn check_site(pages: &[SitePage]) -> Vec<(usize, Issue)> {
+pub fn check_site_with(pages: &[SitePage], options: &SiteOptions) -> Vec<(usize, Issue)> {
     let index = Index::new(pages);
     let mut found = Vec::new();
     redirects::check(&index, &mut found);
     duplicates::check(&index, &mut found);
+    near_duplicates::check(&index, options.near_duplicate_threshold, &mut found);
     canonicals::check(&index, &mut found);
     linking::check(&index, &mut found);
     // Stable: the order the checks ran in survives within a page.

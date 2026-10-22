@@ -80,6 +80,8 @@ struct State {
     structure: [bool; 3],
 
     words: usize,
+    /// Main-content words for the near-duplicate signature.
+    minhash: Option<crate::similarity::MinHasher>,
     /// The text node being read: references are resolved, and words split,
     /// once it is whole.
     node_text: String,
@@ -107,6 +109,11 @@ impl State {
         }
         hash.update(word.as_bytes());
         self.words += 1;
+        if self.landmarks.is_empty() {
+            if let Some(minhash) = self.minhash.as_mut() {
+                minhash.word(word);
+            }
+        }
     }
 
     fn close_link(&mut self) {
@@ -164,8 +171,11 @@ fn on_end(element: &mut Element, on_end: impl FnOnce() + 'static) {
 
 /// `extract_with` in one streaming pass.
 pub fn extract_stream(html: &str, url: &Url, source: Source, options: &ExtractOptions) -> PageFacts {
-    let state = std::rc::Rc::new(RefCell::new(State::default()));
     let opts = *options;
+    let state = std::rc::Rc::new(RefCell::new(State {
+        minhash: opts.similarity.then(crate::similarity::MinHasher::new),
+        ..State::default()
+    }));
     {
         let s = &state;
         let mut handlers = vec![
@@ -496,7 +506,7 @@ pub fn extract_stream(html: &str, url: &Url, source: Source, options: &ExtractOp
                     st.body_seen = true;
                     st.head_closed = true;
                 }
-                if opts.text && st.visible() {
+                if (opts.text || opts.similarity) && st.visible() {
                     for word in text.split_whitespace() {
                         st.word(word);
                     }
@@ -615,6 +625,7 @@ pub fn extract_stream(html: &str, url: &Url, source: Source, options: &ExtractOp
         },
         word_count: if opts.text { st.words } else { 0 },
         text_hash: if opts.text { text_hash } else { 0 },
+        minhash: st.minhash.map(|minhash| minhash.finish()).unwrap_or_default(),
         json_ld: st.json_lds,
         microdata: if st.microdata { crate::microdata::items(html, &base) } else { Vec::new() },
         html_bytes: html.len(),

@@ -91,7 +91,8 @@ struct CrawlArgs {
     #[arg(long, value_enum)]
     fetch: Option<Fetch>,
     /// Parts to read from whole documents: `all`, `head`, or a comma list of
-    /// links, resources, headings, text, structured_data, forms, dom_stats.
+    /// links, resources, headings, text, structured_data, forms, dom_stats,
+    /// similarity.
     #[arg(long)]
     extract: Option<String>,
     /// Only fetch the start URLs (list mode).
@@ -191,6 +192,10 @@ struct CrawlArgs {
     /// Custom search by regex over the HTML, `name=pattern` (repeatable).
     #[arg(long = "search-regex", value_name = "NAME=PATTERN")]
     search_regex: Vec<String>,
+    /// Main-content similarity from which pages are near duplicates, 0-1
+    /// (0.9 by default).
+    #[arg(long)]
+    near_duplicate_threshold: Option<f64>,
 
     /// Render pages with JavaScript on this many threads (0: raw HTML only).
     #[arg(long)]
@@ -385,6 +390,7 @@ fn parse_extract(spec: &str) -> Result<ExtractOptions> {
             "structured_data" => options.structured_data = true,
             "forms" => options.forms = true,
             "dom_stats" => options.dom_stats = true,
+            "similarity" => options.similarity = true,
             _ => bail!("unknown extract part {part:?}"),
         }
     }
@@ -479,6 +485,10 @@ fn crawl_config(args: &CrawlArgs) -> Result<CrawlConfig> {
                 max: 10,
             });
         }
+    }
+    if let Some(threshold) = args.near_duplicate_threshold {
+        anyhow::ensure!((0.5..=1.0).contains(&threshold), "--near-duplicate-threshold is a share between 0.5 and 1");
+        config.checks.near_duplicate_threshold = threshold;
     }
     for (flag, values) in [("search", &args.search), ("search-regex", &args.search_regex)] {
         for value in values {

@@ -53,6 +53,22 @@ pub struct CrawlConfig {
     pub render: Option<RenderSettings>,
     /// Values pulled out of every internal HTML page, and text counted on it.
     pub custom: CustomSettings,
+    pub checks: CheckSettings,
+}
+
+/// How the checks judge the crawl.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CheckSettings {
+    /// Pages whose main content is at least this similar (0-1, estimated
+    /// share of common five-word shingles) are near duplicates.
+    pub near_duplicate_threshold: f64,
+}
+
+impl Default for CheckSettings {
+    fn default() -> Self {
+        CheckSettings { near_duplicate_threshold: 0.9 }
+    }
 }
 
 /// Custom extraction and search (`[[custom.extract]]`, `[[custom.search]]`):
@@ -88,6 +104,7 @@ impl Default for CrawlConfig {
             store: StoreOptions::default(),
             render: None,
             custom: CustomSettings::default(),
+            checks: CheckSettings::default(),
         }
     }
 }

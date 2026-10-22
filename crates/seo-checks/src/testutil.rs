@@ -291,6 +291,7 @@ pub(crate) fn site(url: &str) -> SitePage {
         canonical: None,
         hreflangs: Vec::new(),
         text_hash: None,
+        minhash: None,
         noindex: false,
         blocked_by_robots: false,
         depth: 1,

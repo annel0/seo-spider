@@ -6,10 +6,12 @@
 mod custom;
 mod extract;
 mod microdata;
+mod similarity;
 mod stream;
 
 pub use custom::{CustomFacts, CustomRules, ExtractorSpec, Output, SearchScope, SearchSpec};
 pub use extract::{extract, extract_tree, extract_with};
+pub use similarity::{similarity, SIGNATURE};
 pub use stream::extract_stream;
 
 use serde::{Deserialize, Serialize};
@@ -32,6 +34,9 @@ pub struct ExtractOptions {
     pub forms: bool,
     /// Element count and duplicate ids.
     pub dom_stats: bool,
+    /// A MinHash signature of the main content, for near duplicates
+    /// (about 0.5 KB a page stored).
+    pub similarity: bool,
 }
 
 impl Default for ExtractOptions {
@@ -44,6 +49,7 @@ impl Default for ExtractOptions {
             structured_data: true,
             forms: true,
             dom_stats: true,
+            similarity: true,
         }
     }
 }
@@ -59,6 +65,7 @@ impl ExtractOptions {
             structured_data: false,
             forms: false,
             dom_stats: false,
+            similarity: false,
         }
     }
 }
@@ -201,6 +208,10 @@ pub struct PageFacts {
     pub word_count: usize,
     /// Hash of the normalised visible text, for exact-duplicate detection.
     pub text_hash: u64,
+    /// MinHash signature of the main content (visible text outside header,
+    /// nav, footer and aside), `SIGNATURE` values; empty without text.
+    #[serde(default, skip_serializing_if = "Vec::is_empty", with = "similarity::hex")]
+    pub minhash: Vec<u16>,
     /// `<script type=application/ld+json>` bodies.
     pub json_ld: Vec<String>,
     /// Microdata items (`itemscope` without `itemprop`), each as a JSON

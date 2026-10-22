@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use rayon::prelude::*;
 use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
-use seo_checks::{check_page, check_site, Issue, PageInput, SitePage};
+use seo_checks::{check_page, check_site_with, Issue, PageInput, SiteOptions, SitePage};
 use seo_page::ExtractOptions;
 use seo_store::Store;
 use url::Url;
@@ -27,6 +27,7 @@ fn meaningful(code: &str, extracted: &ExtractOptions) -> bool {
             extracted.headings
         }
         "little_content" | "duplicate_content" | "js_content_only_in_rendered" => extracted.text,
+        "near_duplicate_content" => extracted.similarity,
         "duplicate_ids" | "dom_size" => extracted.dom_stats,
         "image_alt_missing" | "image_alt_too_long" | "image_too_large" | "picture_missing_img"
         | "image_without_size" => extracted.resources,
@@ -112,7 +113,14 @@ pub fn run_checks(store: &mut Store, crawl_id: i64) -> Result<usize> {
         Ok(())
     })?;
     let pages_done = started.elapsed();
-    issues.extend(check_site(&site).into_iter().map(|(at, issue)| (ids[at], issue.code, issue.detail)));
+    // The crawl's own settings, so a later `check` judges it the same way.
+    let config: serde_json::Value = serde_json::from_str(&store.crawl_config(crawl_id)?).unwrap_or_default();
+    let options = SiteOptions {
+        near_duplicate_threshold: config["checks"]["near_duplicate_threshold"]
+            .as_f64()
+            .unwrap_or(SiteOptions::default().near_duplicate_threshold),
+    };
+    issues.extend(check_site_with(&site, &options).into_iter().map(|(at, issue)| (ids[at], issue.code, issue.detail)));
     let site_done = started.elapsed();
     // A URL that was not read (a status-only crawl, a redirect) has no
     // extraction of its own; whether its link checks mean anything depends

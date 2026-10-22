@@ -22,7 +22,7 @@ mod urls;
 
 pub use catalog::{find, CATALOG};
 pub use page::{check_page, PageInput};
-pub use site::{check_site, site_page, SiteHreflang, SiteLink, SitePage};
+pub use site::{check_site, check_site_with, site_page, SiteHreflang, SiteLink, SiteOptions, SitePage};
 pub use structured::{structured_data, StructuredData};
 
 use serde::Serialize;

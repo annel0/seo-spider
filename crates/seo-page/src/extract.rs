@@ -105,6 +105,7 @@ pub fn extract_tree(html: &str, url: &Url, source: Source, options: &ExtractOpti
         dom_elements: if options.dom_stats { document.select(&ALL).count() } else { 0 },
         word_count: 0,
         text_hash: 0,
+        minhash: Vec::new(),
         json_ld: Vec::new(),
         microdata: Vec::new(),
         html_bytes: html.len(),
@@ -314,7 +315,33 @@ pub fn extract_tree(html: &str, url: &Url, source: Source, options: &ExtractOpti
         facts.word_count = text.split_whitespace().count();
         facts.text_hash = xxhash_rust::xxh3::xxh3_64(text.as_bytes());
     }
+    if options.similarity {
+        facts.minhash = main_content_minhash(&document);
+    }
     facts
+}
+
+/// The near-duplicate signature of the visible text outside landmarks.
+fn main_content_minhash(document: &Html) -> Vec<u16> {
+    let mut minhash = crate::similarity::MinHasher::new();
+    if let Some(body) = document.select(&BODY).next() {
+        for node in body.descendants() {
+            let Node::Text(text) = node.value() else { continue };
+            let skipped = node.ancestors().any(|ancestor| {
+                ancestor.value().as_element().is_some_and(|element| {
+                    let role = element.attr("role").unwrap_or("");
+                    matches!(element.name(), "script" | "style" | "noscript" | "template" | "nav" | "header" | "footer" | "aside")
+                        || matches!(role, "navigation" | "banner" | "contentinfo" | "complementary")
+                })
+            });
+            if !skipped {
+                for word in text.split_whitespace() {
+                    minhash.word(word);
+                }
+            }
+        }
+    }
+    minhash.finish()
 }
 
 /// Visible text of `<body>`, whitespace-collapsed.

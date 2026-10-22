@@ -196,6 +196,13 @@ pub static CATALOG: &[CheckDef] = &[
         "Точно такой же видимый текст на нескольких страницах: поисковик выберет одну, остальные потеряют трафик.",
     ),
     def(
+        "near_duplicate_content",
+        Medium,
+        "content",
+        "Почти дубль контента",
+        "Основной текст страницы (без шапки, меню, подвала и сайдбара) совпадает с другой страницей на 90% и больше: поисковик может счесть их дублями и показывать только одну.",
+    ),
+    def(
         "duplicate_ids",
         Low,
         "content",
@@ -833,7 +840,7 @@ mod tests {
         }
         let expected = [
             ("canonicals", 7),
-            ("content", 6),
+            ("content", 7),
             ("headings", 3),
             ("hreflang", 12),
             ("images", 5),
@@ -849,7 +856,7 @@ mod tests {
             ("url", 3),
         ];
         assert_eq!(per_category.into_iter().collect::<Vec<_>>(), expected);
-        assert_eq!(CATALOG.len(), 105);
+        assert_eq!(CATALOG.len(), 106);
     }
 
     #[test]
@@ -891,6 +898,7 @@ mod tests {
             include_str!("structured.rs"),
             include_str!("site/redirects.rs"),
             include_str!("site/duplicates.rs"),
+            include_str!("site/near_duplicates.rs"),
             include_str!("site/canonicals.rs"),
             include_str!("site/linking.rs"),
         ];

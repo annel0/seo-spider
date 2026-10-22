@@ -97,6 +97,43 @@ fn identical_text_is_duplicate_content() {
     assert!(codes_at(&found, 2).is_empty() && codes_at(&found, 3).is_empty() && codes_at(&found, 4).is_empty());
 }
 
+/// Signatures of 400-word texts in which every `step`-th word differs
+/// from `base`'s (none when `step` is 0).
+fn near(url: &str, base: &str, step: usize, hash: u64) -> SitePage {
+    let words: Vec<String> = (0..400)
+        .map(|at| if step > 0 && at % step == 0 { format!("другое{at}") } else { format!("{base}{at}") })
+        .collect();
+    let html = format!("<html><body><nav>{}</nav><main>{}</main></body></html>", "меню ".repeat(50), words.join(" "));
+    let facts = seo_page::extract(&html, &url::Url::parse(url).unwrap(), seo_page::Source::Raw);
+    SitePage { minhash: Some(facts.minhash), text_hash: Some(hash), ..site(url) }
+}
+
+#[test]
+fn near_duplicate_content_is_reported_on_both_pages() {
+    let pages = [
+        near("https://example.com/a", "слово", 0, 1),
+        // One word in 200 changed: about 95% of the shingles in common.
+        near("https://example.com/b", "слово", 200, 2),
+        // One in 20: about 60%.
+        near("https://example.com/c", "слово", 20, 3),
+        // Exactly the same text as /a: duplicate_content, not near.
+        near("https://example.com/d", "слово", 0, 1),
+        near("https://example.com/e", "иное", 0, 5),
+    ];
+    let found = check_site(&pages);
+    assert!(has(&found, 0, "near_duplicate_content") && has(&found, 1, "near_duplicate_content"));
+    assert!(!has(&found, 2, "near_duplicate_content") && !has(&found, 4, "near_duplicate_content"));
+    // /d matches /b too (it is /a's twin), but is an exact copy of /a.
+    let detail = |at: usize| {
+        found.iter().find(|(page, issue)| *page == at && issue.code == "near_duplicate_content").unwrap().1.detail.clone().unwrap()
+    };
+    assert!(detail(1).contains("https://example.com/a") || detail(1).contains("https://example.com/d"), "{}", detail(1));
+    assert!(detail(1).contains("ещё 1 стр."), "{}", detail(1));
+    assert!(has(&found, 0, "duplicate_content") && has(&found, 3, "duplicate_content"));
+    let strict = check_site_with(&pages, &SiteOptions { near_duplicate_threshold: 0.99 });
+    assert!(!strict.iter().any(|(_, issue)| issue.code == "near_duplicate_content"));
+}
+
 // ---- redirects ----
 
 #[test]

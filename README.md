@@ -133,6 +133,19 @@ A rule that does not compile stops the crawl before it starts. Cost on the
 100k-page bench: regex and search nothing measurable, CSS +19% CPU, XPath
 +36% (both parse a DOM).
 
+### Near duplicates
+
+Each page's main content (visible text outside header, nav, footer and
+aside) gets a 128-bin MinHash signature of its five-word shingles, one hash
+per shingle with 16 bits kept a bin: 256 bytes a page, +5% crawl CPU on the
+100k-page bench. After the crawl, locality-sensitive hashing (16 bands of
+8) picks the pairs to compare, and pages at or above
+`checks.near_duplicate_threshold` (`--near-duplicate-threshold`, 0.9 by
+default) get `near_duplicate_content` with the closest match and how many
+more there are. Exact copies stay `duplicate_content`. `--extract` without
+`similarity` skips the signature. allbirds.com: colour variants of a
+product at 97-100%; drom.ru: driving-test tickets at 92-96%.
+
 ### Structured data
 
 JSON-LD and microdata (read into the same shape) are checked against the
