@@ -177,9 +177,22 @@ Start a crawl from a URL and a preset, pause, resume or stop it, and watch
 it: a band of answered, failed and queued URLs, and an overview of charts
 (status codes and indexability as share bars, depth, response times,
 content types, the main issues) that opens the table behind any part of
-it. The internal table (Glide Data Grid) pages, sorts, filters and
-searches on the server; a row opens its detail panel. Issues are counted
-while the crawl runs and settled by the checks after it.
+it.
+
+The tabs follow Screaming Frog: internal, external, response codes, URL,
+titles, descriptions, H1 and H2, content, images, canonicals, directives,
+hreflang, pagination, links, JavaScript, structured data, security, and
+custom extraction when the crawl had rules. Each has its built-in filters
+and the catalog's checks of its category, with counts, and its columns
+(Glide Data Grid), paged, sorted, filtered and searched on the server; a
+row opens its detail panel. The issues view lists every issue found by
+importance and opens the tab filtered to it. A tab exports as CSV with its
+filter, search and sort; the whole crawl as XLSX.
+
+The settings form is built from the config's JSON Schema
+(`GET /api/config/schema`): every field of `CrawlConfig` shows, starting
+from the chosen preset, with what differs marked and a way back. The crawl
+starts with a JSON merge patch over the preset.
 
 The server listens on localhost only unless given `--token`, which then
 goes with every API request. `npm run dev` serves the UI with hot reload
