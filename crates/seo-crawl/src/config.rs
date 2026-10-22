@@ -323,6 +323,8 @@ pub struct RenderSettings {
     /// Layout downloads no images or web fonts.
     pub skip_images: bool,
     pub skip_fonts: bool,
+    /// Pages see `navigator.connection.saveData` and skip link prefetching.
+    pub save_data: bool,
     /// Let pages reach loopback and private addresses.
     pub allow_private_network: bool,
     /// Replace a render thread's page after this many renders.
@@ -364,6 +366,7 @@ impl Default for RenderSettings {
             intersection_full_viewport: render.intersection_full_viewport,
             skip_images: render.skip_images,
             skip_fonts: render.skip_fonts,
+            save_data: render.save_data,
             allow_private_network: false,
             recycle_after: render.recycle_after,
         }
@@ -398,6 +401,7 @@ impl RenderSettings {
             intersection_full_viewport: self.intersection_full_viewport,
             skip_images: self.skip_images,
             skip_fonts: self.skip_fonts,
+            save_data: self.save_data,
             ca_certs: None,
             cookies: Vec::new(),
             headers: Vec::new(),

@@ -208,6 +208,9 @@ struct CrawlArgs {
     /// every target as visible (slower: needs layout).
     #[arg(long)]
     exact_intersection: bool,
+    /// Let pages prefetch linked pages (off: they see saveData).
+    #[arg(long)]
+    no_save_data: bool,
     /// Let layout download images and web fonts (slower; only pixels need them).
     #[arg(long)]
     render_media: bool,
@@ -452,6 +455,7 @@ fn crawl_config(args: &CrawlArgs) -> Result<CrawlConfig> {
         render.intersection_full_viewport &= !args.exact_intersection;
         render.skip_images &= !args.render_media;
         render.skip_fonts &= !args.render_media;
+        render.save_data &= !args.no_save_data;
         match args.fetch_cache_ttl_ms {
             Some(0) => render.fetch_cache_ttl_ms = None,
             Some(ttl) => render.fetch_cache_ttl_ms = Some(ttl),

@@ -78,7 +78,9 @@ default: settle once the content is still while animations run), the
 per-page layout budget (`--layout-budget-ms`), third-party stall limit,
 tracker blocking, the shared script/style cache and the fetch()/XHR
 cache, and what the pages see: `--timezone Europe/Moscow --locale ru-RU`
-(the locale also becomes the crawl's Accept-Language). `--reuse-documents`
+(the locale also becomes the crawl's Accept-Language). Pages see
+`navigator.connection.saveData`, so Nuxt, Gatsby and quicklink do not
+prefetch every linked page (`--no-save-data` lets them). `--reuse-documents`
 renders the page the crawler downloaded instead of requesting it again
 (one request per page less, but the page is the one served to the
 crawler's user agent). Ctrl-C stops a crawl and keeps what it got. See

@@ -51,6 +51,11 @@ pub struct RenderConfig {
     /// Layout downloads no images or web fonts: only pixels need them.
     pub skip_images: bool,
     pub skip_fonts: bool,
+    /// Pages see `navigator.connection.saveData`: Nuxt, Gatsby and
+    /// quicklink then skip prefetching every linked page, which every link
+    /// being "visible" would otherwise start (nuxt.com: 14 requests per page
+    /// instead of 5, CPU +14%, peak memory +20%, the same content).
+    pub save_data: bool,
     /// IANA zone pages see (`Date`, `Intl`); the host's by default. A site
     /// that renders times on its server and again in the page, in another
     /// zone, logs hydration mismatches and re-renders.
@@ -105,6 +110,7 @@ impl Default for RenderConfig {
             intersection_full_viewport: true,
             skip_images: true,
             skip_fonts: true,
+            save_data: true,
             timezone: None,
             ca_certs: None,
             cookies: Vec::new(),
@@ -280,6 +286,9 @@ fn spawn_worker(worker: usize, jobs: async_channel::Receiver<Job>, config: Rende
                 let new_page = |worker: usize, context: &Arc<BrowserContext>| {
                     let mut page = new_page(worker, context);
                     page.set_locale_override(config.locale.clone());
+                    if config.save_data {
+                        page.add_preload_script(SAVE_DATA);
+                    }
                     page
                 };
                 let mut page = new_page(worker, &context);
@@ -327,6 +336,9 @@ pub fn accept_language(locale: &str) -> String {
         None => locale.to_string(),
     }
 }
+
+const SAVE_DATA: &str = "(() => { const connection = navigator.connection; \
+    if (connection) Object.defineProperty(connection, 'saveData', { get: () => true, configurable: true }); })();";
 
 fn new_page(worker: usize, context: &Arc<BrowserContext>) -> Page {
     let page = Page::new(format!("render-{worker}"), context.clone());
