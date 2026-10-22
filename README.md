@@ -68,7 +68,10 @@ whose animations never stop settles once its content is still), the
 per-page layout budget (`--layout-budget-ms`), third-party stall limit,
 tracker blocking, the shared script/style cache and the fetch()/XHR
 cache, and what the pages see: `--timezone Europe/Moscow --locale ru-RU`
-(the locale also becomes the crawl's Accept-Language). See
+(the locale also becomes the crawl's Accept-Language). `--reuse-documents`
+renders the page the crawler downloaded instead of requesting it again
+(one request per page less, but the page is the one served to the
+crawler's user agent). Ctrl-C stops a crawl and keeps what it got. See
 `seo-spider crawl --help`.
 
 Export tabs: `summary`, `internal`, `external`, `redirects`, `javascript`
