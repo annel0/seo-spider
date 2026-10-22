@@ -63,8 +63,12 @@ read. Checks whose input was not extracted report nothing.
 Speed and politeness: `--concurrency` (the site), `--external-concurrency`
 (other hosts, at most 4 per host; a host that does not connect is not asked
 again), `--max-rps`, robots.txt `Crawl-delay`, `--retries`. Rendering:
-`--render-threads`, settle timings, third-party stall limit, tracker
-blocking, the shared script/style cache and the fetch()/XHR cache; see
+`--render-threads`, settle timings (`--settle-content-quiet-ms`: a page
+whose animations never stop settles once its content is still), the
+per-page layout budget (`--layout-budget-ms`), third-party stall limit,
+tracker blocking, the shared script/style cache and the fetch()/XHR
+cache, and what the pages see: `--timezone Europe/Moscow --locale ru-RU`
+(the locale also becomes the crawl's Accept-Language). See
 `seo-spider crawl --help`.
 
 Export tabs: `summary`, `internal`, `external`, `redirects`, `javascript`
