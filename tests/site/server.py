@@ -31,10 +31,31 @@ HOME = page(
 <a href="/refresh">meta refresh</a>
 <a href="/cp1251">windows-1251 page</a>
 <a href="/about#team">about with a fragment</a>
+<a href="/product">structured data</a>
+<a href="/guide-a">guide</a> <a href="/guide-b">guide, near copy</a>
 <img src="/img/ok.png" alt="ok"><img src="/img/missing.png">
 </main><footer><a href="/about">About again</a></footer>
 <script src="/app.js"></script>""",
 )
+
+# Structured data with one case each: a product whose offer has no price and
+# a property Schema.org lacks, a block that is not JSON, and a microdata
+# event without its start date.
+PRODUCT = page(
+    "Kettle",
+    """<h1>Kettle</h1><p class="price">1990 RUB</p>
+<div itemscope itemtype="https://schema.org/Event"><span itemprop="name">Kettle fair</span>
+<div itemprop="location" itemscope itemtype="https://schema.org/Place"><span itemprop="name">Hall</span>
+<span itemprop="address">Main st. 1</span></div></div>""",
+    """<script type="application/ld+json">{"@context": "https://schema.org", "@type": "Product",
+"name": "Kettle", "colour": "white", "offers": {"@type": "Offer", "priceCurrency": "RUB"}}</script>
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "Organization",}</script>""",
+)
+
+# Two articles with the same 300 words but for a sentence: near duplicates.
+GUIDE_WORDS = " ".join(f"step{n} of the long guide to kettles" for n in range(40))
+GUIDE_A = page("Guide A", f"<nav>{'menu ' * 30}</nav><main><h1>Guide</h1><p>{GUIDE_WORDS} Written in spring.</p></main>")
+GUIDE_B = page("Guide B", f"<nav>{'other menu ' * 20}</nav><main><h1>Guide</h1><p>{GUIDE_WORDS} Revised in autumn.</p></main>")
 
 # Adds a link only after a same-site fetch() answers, like a SPA would.
 APP_JS = """fetch('/api/items.json').then(r => r.json()).then(items => {
@@ -70,6 +91,9 @@ PAGES = {
     ),
     "/js-deep": ("text/html; charset=utf-8", page("JS deep", "<h1>Two clicks past the script</h1>")),
     "/orphan": ("text/html; charset=utf-8", page("Orphan", "<h1>Only in the sitemap</h1>")),
+    "/product": ("text/html; charset=utf-8", PRODUCT),
+    "/guide-a": ("text/html; charset=utf-8", GUIDE_A),
+    "/guide-b": ("text/html; charset=utf-8", GUIDE_B),
     "/app.js": ("application/javascript", APP_JS),
     "/img/ok.png": ("image/png", "PNG"),
 }

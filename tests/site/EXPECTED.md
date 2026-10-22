@@ -23,6 +23,9 @@ Start: `http://127.0.0.1:8099/`.
 | `/app.js` | 200, internal resource |
 | `/js-only`, `/js-deep` | absent: only the script adds the link |
 | `/api/items.json` | absent: requested by the script, not linked |
+| `/product` | structured_data tab: JSON-LD and Microdata, types Product, Organization, Event; issues `structured_data_parse_error` (the Organization block is not JSON), `schema_property_invalid` (`Product.colour`), `rich_result_required_missing` (offer price, event startDate) |
+| `/guide-a`, `/guide-b` | `near_duplicate_content` on both (the same guide but for one sentence, different menus); not `duplicate_content` |
+| custom tab | with `--extract-css price=.price --search kettle=kettle`: `/product` price "1990 RUB", kettle found in its HTML |
 
 ## Rendered (`--render-threads N`)
 
