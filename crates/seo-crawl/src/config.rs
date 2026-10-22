@@ -276,8 +276,10 @@ pub struct RenderSettings {
     /// How long third-party requests in flight hold the snapshot.
     pub settle_grace_ms: u64,
     /// Settle once the content (nodes, text, links) has been still this
-    /// long, while animations still write styles; 0 waits for all DOM
-    /// activity to stop.
+    /// long, while animations still write styles; 0 (the default) waits for
+    /// all DOM activity to stop. A spinner shown while data loads from
+    /// another site also leaves the content still, so keep it well above
+    /// such a load.
     pub settle_content_quiet_ms: u64,
     pub navigation_timeout_ms: u64,
     /// The renderer keeps obscura's browser user agent unless one is given.

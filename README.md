@@ -64,8 +64,8 @@ Speed and politeness: `--concurrency` (the site), `--external-concurrency`
 (other hosts, at most 4 per host; a host that does not connect is not asked
 again), `--max-rps`, robots.txt `Crawl-delay`, `--retries`, `--http2`
 (on in the `minimal` preset, where it is several times faster). Rendering:
-`--render-threads`, settle timings (`--settle-content-quiet-ms`: a page
-whose animations never stop settles once its content is still), the
+`--render-threads`, settle timings (`--settle-content-quiet-ms`, off by
+default: settle once the content is still while animations run), the
 per-page layout budget (`--layout-budget-ms`), third-party stall limit,
 tracker blocking, the shared script/style cache and the fetch()/XHR
 cache, and what the pages see: `--timezone Europe/Moscow --locale ru-RU`

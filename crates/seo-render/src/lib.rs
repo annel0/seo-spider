@@ -79,9 +79,11 @@ impl Default for RenderConfig {
             // ~25 MB on simple pages and 300-400 MB at its peak on big
             // documentation pages (MDN, react.dev).
             threads: std::thread::available_parallelism().map_or(4, |cores| cores.get()).clamp(2, 16),
-            // A page whose spinners and carousels never stop animating
-            // settles once its content has been still for a second.
-            settle: SettlePolicy { content_quiet: Some(Duration::from_secs(1)), ..SettlePolicy::default() },
+            // Settling on content quiet alone (SettlePolicy::content_quiet)
+            // stays off: a spinner running while the data loads from
+            // another site looks the same, and one sports.ru render under
+            // load was taken there with 157 words of 9400.
+            settle: SettlePolicy::default(),
             navigation_timeout: Duration::from_secs(30),
             user_agent: None,
             recycle_after: 200,
