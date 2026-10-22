@@ -564,17 +564,16 @@ impl Pacer {
         sleep_unless_stopped(stop, at).await
     }
 
-    /// The site answered 429 or 503.
-    fn slow_down(&self) {
+    /// The site answered 429 or 503 to a request sent at `sent`.
+    fn slow_down(&self, sent: tokio::time::Instant) {
         if !self.adaptive {
             return;
         }
-        let now = tokio::time::Instant::now();
         let mut state = self.state.lock().expect("pacer lock");
-        if state.slowed_at.is_some_and(|at| now < at + state.interval.max(Duration::from_secs(1))) {
+        if state.slowed_at.is_some_and(|at| sent <= at) {
             return;
         }
-        state.slowed_at = Some(now);
+        state.slowed_at = Some(tokio::time::Instant::now());
         state.interval = (state.interval * 2).clamp(Duration::from_millis(100), Duration::from_secs(10)).max(self.floor);
         tracing::info!(interval_ms = state.interval.as_millis() as u64, "the site asks to slow down");
     }
@@ -831,10 +830,13 @@ async fn fetch_retrying(
             }
         }
         let client = if item.internal { &ctx.client } else { &ctx.external_client };
+        let sent = tokio::time::Instant::now();
         let fetched = fetch::fetch(client, &item.url, mode, timeout, ctx.head_for_status).await;
+        // Connect timeouts are no signal: mos.ru, refusing connections after
+        // a burst, went on refusing them at a 10 s interval.
         if let (true, Some(pacer)) = (item.internal, &ctx.pacer) {
             match fetched.http.status {
-                429 | 503 => pacer.slow_down(),
+                429 | 503 => pacer.slow_down(sent),
                 200..=399 => pacer.speed_up(),
                 _ => {}
             }
@@ -1273,24 +1275,29 @@ mod tests {
     #[tokio::test]
     async fn pacer_backs_off_on_overload_and_eases_back() {
         let pacer = Pacer::new(Duration::ZERO, true);
-        pacer.slow_down();
+        let sent = tokio::time::Instant::now();
+        pacer.slow_down(sent);
         assert_eq!(pacer.interval(), Duration::from_millis(100));
-        // The other answers to requests already sent do not compound it.
-        pacer.slow_down();
+        // Other answers to requests sent before it do not compound it; an
+        // answer to one sent after it does.
+        pacer.slow_down(sent);
         assert_eq!(pacer.interval(), Duration::from_millis(100));
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        pacer.slow_down(tokio::time::Instant::now());
+        assert_eq!(pacer.interval(), Duration::from_millis(200));
         for _ in 0..300 {
             pacer.speed_up();
         }
         assert_eq!(pacer.interval(), Duration::ZERO);
         let floored = Pacer::new(Duration::from_millis(500), true);
-        floored.slow_down();
+        floored.slow_down(tokio::time::Instant::now());
         assert_eq!(floored.interval(), Duration::from_secs(1));
         for _ in 0..300 {
             floored.speed_up();
         }
         assert_eq!(floored.interval(), Duration::from_millis(500));
         let fixed = Pacer::new(Duration::from_millis(500), false);
-        fixed.slow_down();
+        fixed.slow_down(tokio::time::Instant::now());
         assert_eq!(fixed.interval(), Duration::from_millis(500));
     }
 
