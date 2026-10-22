@@ -132,6 +132,13 @@ impl CrawlConfig {
         match name {
             "headers" => {
                 config.fetch = FetchLevel::Status;
+                // A GET dropped after its headers, over HTTP/2: CDNs answer
+                // HEAD past their cache (shopify.com, 300 URLs: median TTFB
+                // 513 ms with HEAD, 98 ms with GET; 12.6 s -> 3.2 s). No
+                // resource or external checks run here, where GET after a
+                // refused HEAD stalled.
+                config.http.http2 = true;
+                config.http.head_for_status = false;
                 config.follow_links = false;
                 config.use_sitemaps = true;
                 config.check_external = false;
@@ -471,6 +478,7 @@ mod tests {
         let headers = CrawlConfig::preset("headers").unwrap();
         assert_eq!(headers.fetch, FetchLevel::Status);
         assert!(!headers.follow_links && headers.use_sitemaps && !headers.check_resources);
+        assert!(headers.http.http2 && !headers.http.head_for_status);
         let minimal = CrawlConfig::preset("minimal").unwrap();
         assert_eq!(minimal.fetch, FetchLevel::Head);
         assert!(!minimal.follow_links && minimal.use_sitemaps);
