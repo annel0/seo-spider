@@ -1,145 +1,95 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  DataEditor,
-  GridCellKind,
-  type GridCell,
-  type GridColumn,
-  type Item,
-  type Rectangle,
-  type Theme,
-} from "@glideapps/glide-data-grid";
+import { DataEditor, GridCellKind, type GridCell, type GridColumn, type Item, type Rectangle, type Theme } from "@glideapps/glide-data-grid";
 import "@glideapps/glide-data-grid/dist/index.css";
-import { api, type Sort, type SortKey, type UrlRow } from "../api";
+import { api, type CellKind, type CellValue, type RowsQuery, type Sort, type TabColumn, type TabRows } from "../api";
 import { useColors, useInterval } from "../hooks";
-import { formatCount, statusClass, statusColor } from "../labels";
+import { formatBytes, formatCount, indexabilityColor, indexabilityLabels, readableUrl, statusClass, statusColor } from "../labels";
 
 /// Rows fetched at a time.
 const PAGE = 100;
 
-type Column = {
-  title: string;
-  width: number;
-  sort?: SortKey;
-  cell: (row: UrlRow, color: (name: string) => string) => GridCell;
-};
+type Row = TabRows["rows"][number];
 
-const text = (value: string | null | undefined, colour?: string): GridCell => ({
+const text = (value: string, colour?: string, align?: "right"): GridCell => ({
   kind: GridCellKind.Text,
-  data: value ?? "",
-  displayData: value ?? "",
+  data: value,
+  displayData: value,
   allowOverlay: false,
+  contentAlign: align,
   themeOverride: colour ? { textDark: colour } : undefined,
 });
 
-const number = (value: number | null | undefined, colour?: string, suffix = ""): GridCell => ({
+const number = (value: number, colour?: string, suffix = ""): GridCell => ({
   kind: GridCellKind.Number,
-  data: value ?? undefined,
-  displayData: value === null || value === undefined ? "" : `${formatCount(value)}${suffix}`,
+  data: value,
+  displayData: `${formatCount(value)}${suffix}`,
   allowOverlay: false,
   contentAlign: "right",
   themeOverride: colour ? { textDark: colour } : undefined,
 });
 
-const isHtml = (row: UrlRow) => (row.content_type ?? "").toLowerCase().startsWith("text/html");
-
-/// Indexable as the overview counts it: 2xx HTML, no noindex, no canonical
-/// to another URL. `null` for what is not a page.
-const indexable = (row: UrlRow) => {
-  if (!isHtml(row) && row.status !== 0 && !(row.status >= 300 && row.status < 400)) return null;
-  if (row.status < 200 || row.status >= 300) return false;
-  if ((row.robots ?? "").includes("noindex")) return false;
-  return !row.canonical || row.canonical === row.url;
-};
-
-const lengthColour = (length: number | null, low: number, high: number, html: boolean) =>
-  length === null ? (html ? "--bad" : undefined) : length < low || length > high ? "--warn" : "--ok";
-
-function columnsFor(origin: string): Column[] {
-  const path = (url: string) => (url.startsWith(origin) ? url.slice(origin.length) || "/" : url);
-  return [
-    { title: "Адрес", width: 330, sort: "url", cell: (row) => text(path(row.url)) },
-    {
-      title: "Код",
-      width: 64,
-      sort: "status",
-      cell: (row, color) => text(row.status ? String(row.status) : "—", color(statusColor(statusClass(row.status)))),
-    },
-    {
-      title: "Индекс",
-      width: 64,
-      cell: (row, color) => {
-        const state = indexable(row);
-        return state === null ? text("") : text(state ? "✓" : "✕", color(state ? "--ok" : "--bad"));
-      },
-    },
-    { title: "Title", width: 260, sort: "title", cell: (row) => text(row.title) },
-    {
-      title: "Длина",
-      width: 64,
-      sort: "title_length",
-      cell: (row, color) => {
-        const colour = lengthColour(row.title_length, 30, 60, isHtml(row));
-        return number(row.title_length, colour ? color(colour) : undefined);
-      },
-    },
-    { title: "Description", width: 220, sort: "description", cell: (row) => text(row.description) },
-    {
-      title: "Длина",
-      width: 64,
-      sort: "description_length",
-      cell: (row, color) => {
-        const colour = lengthColour(row.description_length, 70, 160, isHtml(row));
-        return number(row.description_length, colour ? color(colour) : undefined);
-      },
-    },
-    { title: "H1", width: 200, sort: "h1", cell: (row) => text(row.h1) },
-    { title: "Слов", width: 70, sort: "word_count", cell: (row) => number(row.word_count) },
-    { title: "Глубина", width: 72, sort: "depth", cell: (row) => number(row.depth) },
-    {
-      title: "Ответ",
-      width: 80,
-      sort: "ttfb_ms",
-      cell: (row, color) =>
-        row.status === 0
-          ? text("")
-          : number(row.ttfb_ms, color(row.ttfb_ms < 300 ? "--ok" : row.ttfb_ms < 1000 ? "--warn" : "--bad"), " мс"),
-    },
-    { title: "Размер", width: 84, sort: "size", cell: (row) => number(Math.round(row.size / 1024), undefined, " КБ") },
-    { title: "Ссылок", width: 72, sort: "links", cell: (row) => number(row.links) },
-    {
-      title: "Проблем",
-      width: 80,
-      cell: (row, color) => number(row.issues, row.issues > 0 ? color("--warn") : color("--ink-3")),
-    },
-    { title: "JS", width: 46, cell: (row, color) => text(row.rendered ? "●" : "", color("--accent")) },
-  ];
+/// A value as its column's kind draws it: colour carries the judgement, so
+/// the eye finds what is off without reading.
+function draw(kind: CellKind, value: CellValue, color: (name: string) => string, path: (url: string) => string): GridCell {
+  if (value === null || value === "") return text("");
+  switch (kind.type) {
+    case "url":
+      return text(path(String(value)));
+    case "status": {
+      const status = Number(value);
+      return text(status ? String(status) : "—", color(statusColor(statusClass(status))));
+    }
+    case "number":
+      return typeof value === "number" ? number(value) : text(String(value));
+    case "length": {
+      const length = Number(value);
+      return number(length, color(length < kind.low || length > kind.high ? "--warn" : "--ok"));
+    }
+    case "ms": {
+      const ms = Number(value);
+      return number(ms, color(ms < 300 ? "--ok" : ms < 1000 ? "--warn" : "--bad"), " мс");
+    }
+    case "bytes":
+      return text(formatBytes(Number(value)), undefined, "right");
+    case "bool":
+      return value ? text("✓", color("--ok")) : text("—", color("--ink-3"));
+    case "indexable":
+      return text(indexabilityLabels[String(value)] ?? String(value), color(indexabilityColor(String(value))));
+    case "issues": {
+      const count = Number(value);
+      return number(count, color(count > 0 ? "--warn" : "--ink-3"));
+    }
+    default:
+      return text(String(value));
+  }
 }
 
-export function UrlGrid({
+/// One tab's rows, fetched a page at a time as they scroll into view; the
+/// server sorts, filters and searches.
+export function TabGrid({
   crawlId,
+  tab,
+  columns,
   origin,
-  filter,
-  search,
-  sort,
+  query,
   live,
   onSort,
   onSelect,
   onTotal,
 }: {
   crawlId: number;
+  tab: string;
+  columns: TabColumn[];
   origin: string;
-  filter: string;
-  search: string;
-  sort: Sort;
+  query: RowsQuery;
   live: boolean;
   onSort: (sort: Sort) => void;
   onSelect: (urlId: number) => void;
   onTotal: (total: number) => void;
 }) {
   const { dark, color } = useColors();
-  const columns = useMemo(() => columnsFor(origin), [origin]);
-  const [widths, setWidths] = useState<number[]>(() => columns.map((column) => column.width));
-  const cache = useRef(new Map<number, UrlRow[]>());
+  const [widths, setWidths] = useState<Record<string, number>>({});
+  const cache = useRef(new Map<number, Row[]>());
   const pending = useRef(new Set<number>());
   const visible = useRef<Rectangle>({ x: 0, y: 0, width: 1, height: 60 });
   const generation = useRef(0);
@@ -148,6 +98,7 @@ export function UrlGrid({
   // A ref, so a parent's new callback does not reload the table.
   const reportTotal = useRef(onTotal);
   reportTotal.current = onTotal;
+  const { filter, search, sort } = query;
 
   const load = useCallback(
     async (page: number, again = false) => {
@@ -155,7 +106,7 @@ export function UrlGrid({
       pending.current.add(page);
       const asked = generation.current;
       try {
-        const result = await api.rows(crawlId, { filter, search, sort, offset: page * PAGE, limit: PAGE });
+        const result = await api.rows(crawlId, tab, { filter, search, sort }, page * PAGE, PAGE);
         if (asked !== generation.current) return;
         cache.current.set(page, result.rows);
         setTotal(result.total);
@@ -167,7 +118,7 @@ export function UrlGrid({
         pending.current.delete(page);
       }
     },
-    [crawlId, filter, search, sort],
+    [crawlId, tab, filter, search, sort],
   );
 
   const visiblePages = () => {
@@ -191,22 +142,25 @@ export function UrlGrid({
     document.fonts.ready.then(() => setTick((value) => value + 1));
   }, []);
 
-  const getCellContent = useCallback(
-    ([col, row]: Item): GridCell => {
-      const rows = cache.current.get(Math.floor(row / PAGE));
-      const found = rows?.[row % PAGE];
-      if (!found) return { kind: GridCellKind.Loading, allowOverlay: false };
-      return columns[col].cell(found, color);
-    },
-    // `tick` redraws the cells as pages arrive.
-    [columns, tick, dark],
+  const path = useCallback(
+    (url: string) => readableUrl(origin && url.startsWith(origin) ? url.slice(origin.length) || "/" : url),
+    [origin],
   );
 
-  const gridColumns: GridColumn[] = columns.map((column, at) => ({
-    title:
-      column.sort && column.sort === sort.key ? `${column.title} ${sort.descending ? "↓" : "↑"}` : column.title,
-    id: String(at),
-    width: widths[at],
+  const getCellContent = useCallback(
+    ([col, row]: Item): GridCell => {
+      const found = cache.current.get(Math.floor(row / PAGE))?.[row % PAGE];
+      if (!found) return { kind: GridCellKind.Loading, allowOverlay: false };
+      return draw(columns[col].kind, found.cells[col] ?? null, color, path);
+    },
+    // `tick` redraws the cells as pages arrive.
+    [columns, tick, dark, path],
+  );
+
+  const gridColumns: GridColumn[] = columns.map((column) => ({
+    title: column.sortable && column.key === sort.key ? `${column.title} ${sort.descending ? "↓" : "↑"}` : column.title,
+    id: column.key,
+    width: widths[column.key] ?? column.width,
   }));
 
   const theme: Partial<Theme> = useMemo(
@@ -247,15 +201,17 @@ export function UrlGrid({
         visiblePages().forEach((page) => load(page));
       }}
       onHeaderClicked={(col) => {
-        const key = columns[col].sort;
-        if (!key) return;
-        onSort({ key, descending: key === sort.key ? !sort.descending : key !== "url" && key !== "title" });
+        const column = columns[col];
+        if (!column.sortable) return;
+        // Text sorts A to Z first, figures largest first.
+        const textual = column.kind.type === "url" || column.kind.type === "text";
+        onSort({ key: column.key, descending: column.key === sort.key ? !sort.descending : !textual });
       }}
       onCellClicked={([, row]) => {
         const found = cache.current.get(Math.floor(row / PAGE))?.[row % PAGE];
         if (found) onSelect(found.id);
       }}
-      onColumnResize={(_, size, at) => setWidths((current) => current.map((width, index) => (index === at ? size : width)))}
+      onColumnResize={(column, size) => setWidths((current) => ({ ...current, [column.id ?? ""]: size }))}
       rowMarkers="none"
       smoothScrollX
       smoothScrollY

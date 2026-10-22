@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { isActive, type Crawl, type Overview, type Preset, type Progress, type StartRequest } from "../api";
+import { isActive, type Crawl, type Overview, type Preset, type Progress } from "../api";
 import type { SpeedPoint } from "../hooks";
 import { formatBytes, formatCount, formatDuration, stateLabels, statusColor, statusLabels } from "../labels";
 import { Icon } from "./Icon";
@@ -8,7 +8,7 @@ const presetLabels: Record<string, string> = {
   headers: "Заголовки",
   minimal: "Минимум",
   seo: "SEO",
-  js: "Рендер",
+  js: "SEO + JS",
   dump: "Дамп",
 };
 
@@ -30,6 +30,17 @@ export function CommandBar({
   crawlId,
   progress,
   busy,
+  exportHref,
+  preset,
+  limit,
+  limitHint,
+  threads,
+  changed,
+  settingsOpen,
+  onPreset,
+  onLimit,
+  onThreads,
+  onSettings,
   onSelect,
   onStart,
   onPause,
@@ -41,19 +52,31 @@ export function CommandBar({
   crawlId: number | null;
   progress: Progress | null;
   busy: boolean;
+  /// The whole crawl as XLSX, when there is one to export.
+  exportHref: string | null;
+  preset: string;
+  /// The URL limit typed here, and the preset's.
+  limit: number | null;
+  limitHint: number | null;
+  /// Pages rendered at once; null when the settings render nothing.
+  threads: number | null;
+  /// Settings that differ from the preset.
+  changed: number;
+  settingsOpen: boolean;
+  onPreset: (name: string) => void;
+  onLimit: (limit: number | undefined) => void;
+  onThreads: (threads: number | undefined) => void;
+  onSettings: () => void;
   onSelect: (id: number | null) => void;
-  onStart: (request: StartRequest) => void;
+  onStart: (startUrl: string) => void;
   onPause: () => void;
   onResume: () => void;
   onStop: () => void;
 }) {
   const [url, setUrl] = useState("");
-  const [preset, setPreset] = useState("seo");
-  const [limit, setLimit] = useState("");
-  const [threads, setThreads] = useState("4");
   const [invalid, setInvalid] = useState(false);
   const active = isActive(progress?.state);
-  const renders = preset === "js" || preset === "dump";
+  const chosen = presets.find((item) => item.name === preset);
 
   const start = () => {
     const typed = url.trim();
@@ -68,12 +91,7 @@ export function CommandBar({
       setInvalid(true);
       return;
     }
-    onStart({
-      start_url: address,
-      preset,
-      max_urls: limit ? Number(limit) : undefined,
-      render_threads: renders ? Number(threads) || 4 : undefined,
-    });
+    onStart(address);
   };
 
   return (
@@ -85,7 +103,7 @@ export function CommandBar({
       <select
         value={crawlId ?? ""}
         onChange={(event) => onSelect(event.target.value ? Number(event.target.value) : null)}
-        style={{ maxWidth: 260 }}
+        style={{ maxWidth: 240 }}
         aria-label="Обход"
       >
         <option value="">Новый обход</option>
@@ -95,6 +113,11 @@ export function CommandBar({
           </option>
         ))}
       </select>
+      {exportHref && (
+        <a className="button" href={exportHref} download title="Все вкладки обхода одной книгой Excel">
+          <Icon name="download" /> XLSX
+        </a>
+      )}
 
       {active && crawlId !== null ? (
         <>
@@ -133,7 +156,7 @@ export function CommandBar({
                 role="radio"
                 aria-checked={item.name === preset}
                 className={item.name === preset ? "on" : undefined}
-                onClick={() => setPreset(item.name)}
+                onClick={() => onPreset(item.name)}
                 title={item.description}
               >
                 {presetLabels[item.name] ?? item.title}
@@ -141,26 +164,38 @@ export function CommandBar({
             ))}
           </div>
           <input
-            value={limit}
-            onChange={(event) => setLimit(event.target.value.replace(/\D/g, ""))}
-            placeholder="лимит URL"
+            value={limit ?? ""}
+            onChange={(event) => {
+              const digits = event.target.value.replace(/\D/g, "");
+              onLimit(digits ? Number(digits) : undefined);
+            }}
+            placeholder={limitHint ? `лимит ${formatCount(limitHint)}` : "лимит URL"}
+            title="Сколько внутренних страниц обойти, не больше"
             aria-label="Лимит URL"
             className="figures"
-            style={{ width: 100 }}
+            style={{ width: 120 }}
           />
-          {renders && (
+          {threads !== null && (
             <input
-              value={threads}
-              onChange={(event) => setThreads(event.target.value.replace(/\D/g, ""))}
-              title="Потоков рендера"
-              aria-label="Потоков рендера"
+              value={threads || ""}
+              onChange={(event) => {
+                const digits = event.target.value.replace(/\D/g, "");
+                onThreads(digits ? Number(digits) : undefined);
+              }}
+              title="Сколько страниц выполняют JavaScript одновременно"
+              aria-label="Потоков JS-рендера"
               className="figures"
               style={{ width: 52 }}
             />
           )}
+          <button className={settingsOpen ? "on" : undefined} onClick={onSettings} title="Все настройки обхода">
+            <Icon name="settings" /> Настройки
+            {changed > 0 && <span className="badge">{changed}</span>}
+          </button>
           <button className="primary" onClick={start} disabled={busy}>
             <Icon name="play" /> Старт
           </button>
+          {chosen && <div className="hint">{chosen.description}</div>}
         </>
       )}
     </header>
@@ -214,7 +249,7 @@ export function Telemetry({
         {active && <Readout value={formatCount(progress.queued)} name="в очереди" />}
         {progress.state === "crawling" && <Readout value={`${Math.round(rate)}`} name="URL в секунду" />}
         <Readout value={formatCount(progress.errors)} name="ошибок" colour={progress.errors > 0 ? "--bad" : undefined} />
-        {progress.rendered > 0 && <Readout value={formatCount(progress.rendered)} name="отрисовано" />}
+        {progress.rendered > 0 && <Readout value={formatCount(progress.rendered)} name="с JS-рендером" />}
         {progress.bytes > 0 && <Readout value={formatBytes(progress.bytes)} name="скачано" />}
         {progress.elapsed_ms > 0 && <Readout value={formatDuration(progress.elapsed_ms)} name="время" />}
         {progress.error && <span className="state" style={{ color: "var(--bad)" }}>{progress.error}</span>}

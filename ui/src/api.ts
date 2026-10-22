@@ -1,5 +1,7 @@
 // The server's API (crates/seo-server): the types mirror its JSON.
 
+import type { Json, JsonObject, Schema } from "./settings";
+
 export type Preset = { name: string; title: string; description: string };
 
 export type CrawlState =
@@ -38,16 +40,14 @@ export type Severity = "high" | "medium" | "low";
 
 export type IssueCount = {
   code: string;
+  /// URLs with the issue.
   count: number;
   title: string | null;
   description: string | null;
   severity: Severity | null;
   category: string | null;
-};
-
-export type Summary = {
-  filters: { key: string; count: number }[];
-  issues: IssueCount[];
+  /// The tab that lists it as a filter.
+  tab: string | null;
 };
 
 export type Overview = {
@@ -63,50 +63,40 @@ export type Overview = {
   severities: [Severity, number][];
 };
 
-export type UrlRow = {
-  id: number;
-  url: string;
-  status: number;
-  content_type: string | null;
-  error: string | null;
-  depth: number | null;
-  ttfb_ms: number;
-  size: number;
-  in_sitemap: boolean;
-  title: string | null;
-  title_length: number | null;
-  description: string | null;
-  description_length: number | null;
-  h1: string | null;
-  h1_length: number | null;
-  word_count: number | null;
-  links: number | null;
-  canonical: string | null;
-  robots: string | null;
-  rendered: boolean;
-  issues: number;
+/// How a column's values are drawn.
+export type CellKind =
+  | { type: "url" }
+  | { type: "status" }
+  | { type: "text" }
+  | { type: "number" }
+  | { type: "length"; low: number; high: number }
+  | { type: "ms" }
+  | { type: "bytes" }
+  | { type: "bool" }
+  | { type: "indexable" }
+  | { type: "issues" };
+
+export type TabColumn = { key: string; title: string; kind: CellKind; sortable: boolean; width: number };
+
+/// A filter of a tab: a built-in one (`html`, `4xx`) or a check (`issue:<code>`).
+export type TabFilter = {
+  key: string;
+  count: number;
+  title?: string;
+  description?: string;
+  severity?: Severity;
 };
 
-export type RowsPage = { total: number; rows: UrlRow[] };
+export type TabDef = { key: string; title: string; total: number; columns: TabColumn[]; filters: TabFilter[] };
 
-export type SortKey =
-  | "url"
-  | "status"
-  | "content_type"
-  | "depth"
-  | "ttfb_ms"
-  | "size"
-  | "title"
-  | "title_length"
-  | "description"
-  | "description_length"
-  | "h1"
-  | "h1_length"
-  | "word_count"
-  | "links"
-  | "canonical";
+export type CellValue = string | number | boolean | null;
 
-export type Sort = { key: SortKey; descending: boolean };
+export type TabRows = { total: number; rows: { id: number; cells: CellValue[] }[] };
+
+/// A column key of the tab.
+export type Sort = { key: string; descending: boolean };
+
+export type RowsQuery = { filter: string; search: string; sort: Sort };
 
 export type UrlIssue = {
   code: string;
@@ -167,8 +157,8 @@ export type UrlDetail = {
 export type StartRequest = {
   start_url: string;
   preset: string;
-  max_urls?: number;
-  render_threads?: number;
+  /// A JSON merge patch over the preset's settings.
+  config?: JsonObject;
 };
 
 // A token in the page's address (`?token=`) is kept for the session and
@@ -204,29 +194,41 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   presets: () => call<Preset[]>("/api/presets"),
+  presetConfig: (name: string) => call<Json>(`/api/presets/${name}/config`),
+  configSchema: () => call<Schema>("/api/config/schema"),
   crawls: () => call<Crawl[]>("/api/crawls"),
   start: (request: StartRequest) =>
     call<{ id: number }>("/api/crawls", { method: "POST", body: JSON.stringify(request) }),
   pause: (id: number) => call<void>(`/api/crawls/${id}/pause`, { method: "POST" }),
   resume: (id: number) => call<void>(`/api/crawls/${id}/resume`, { method: "POST" }),
   stop: (id: number) => call<void>(`/api/crawls/${id}/stop`, { method: "POST" }),
-  summary: (id: number) => call<Summary>(`/api/crawls/${id}/summary`),
   overview: (id: number) => call<Overview>(`/api/crawls/${id}/overview`),
-  rows: (id: number, query: { filter: string; search: string; sort: Sort; offset: number; limit: number }) => {
-    const params = new URLSearchParams({
-      filter: query.filter,
-      sort: query.sort.key,
-      desc: String(query.sort.descending),
-      offset: String(query.offset),
-      limit: String(query.limit),
-    });
-    if (query.search.trim()) params.set("q", query.search.trim());
-    return call<RowsPage>(`/api/crawls/${id}/rows?${params}`);
-  },
+  issues: (id: number) => call<IssueCount[]>(`/api/crawls/${id}/issues`),
+  tabs: (id: number) => call<TabDef[]>(`/api/crawls/${id}/tabs`),
+  rows: (id: number, tab: string, query: RowsQuery, offset: number, limit: number) =>
+    call<TabRows>(`/api/crawls/${id}/tabs/${tab}/rows?${rowsParams(query, { offset: String(offset), limit: String(limit) })}`),
   url: (id: number) => call<UrlDetail>(`/api/urls/${id}`),
   // EventSource sends no headers: the token goes in the address.
   events: (id: number) =>
     new EventSource(`/api/crawls/${id}/events${token ? `?token=${encodeURIComponent(token)}` : ""}`),
+};
+
+function rowsParams(query: RowsQuery, extra: Record<string, string> = {}) {
+  const params = new URLSearchParams({ filter: query.filter, sort: query.sort.key, desc: String(query.sort.descending), ...extra });
+  if (query.search.trim()) params.set("q", query.search.trim());
+  return params;
+}
+
+// Downloads are plain links, so the token goes in the address.
+const withToken = (params: URLSearchParams) => {
+  if (token) params.set("token", token);
+  const text = params.toString();
+  return text ? `?${text}` : "";
+};
+
+export const downloads = {
+  xlsx: (id: number) => `/api/crawls/${id}/export.xlsx${withToken(new URLSearchParams())}`,
+  csv: (id: number, tab: string, query: RowsQuery) => `/api/crawls/${id}/tabs/${tab}/export.csv${withToken(rowsParams(query))}`,
 };
 
 export const isActive = (state: CrawlState | undefined) =>

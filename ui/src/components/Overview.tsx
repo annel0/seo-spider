@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { Overview as OverviewData, Progress, Summary } from "../api";
+import type { IssueCount, Overview as OverviewData, Progress } from "../api";
 import { useColors, type SpeedPoint } from "../hooks";
 import {
   contentTypeLabels,
@@ -14,21 +14,21 @@ import {
 } from "../labels";
 import { Chart, type ChartOption } from "./Chart";
 
-/// The table filter a status or indexability group opens, when there is one.
-const statusFilter: Record<string, string> = {
-  "2xx": "2xx",
-  "3xx": "3xx",
-  "4xx": "4xx",
-  "5xx": "5xx",
-  no_response: "no_response",
-  blocked: "blocked",
+/// The tab and filter a status or indexability group opens, when there is one.
+const statusFilter: Record<string, [string, string]> = {
+  "2xx": ["response_codes", "2xx"],
+  "3xx": ["response_codes", "3xx"],
+  "4xx": ["response_codes", "4xx"],
+  "5xx": ["response_codes", "5xx"],
+  no_response: ["response_codes", "no_response"],
+  blocked: ["response_codes", "blocked"],
 };
-const indexabilityFilter: Record<string, string> = {
-  indexable: "html",
-  noindex: "noindex",
-  redirect: "3xx",
-  error: "4xx",
-  blocked: "blocked",
+const indexabilityFilter: Record<string, [string, string]> = {
+  indexable: ["internal", "html"],
+  noindex: ["directives", "noindex"],
+  redirect: ["response_codes", "3xx"],
+  error: ["response_codes", "4xx"],
+  blocked: ["response_codes", "blocked"],
 };
 
 // Plex Condensed has no Cyrillic: Onest carries the letters next to its figures.
@@ -46,16 +46,16 @@ const responseBuckets: [number, string][] = [
 
 export function Overview({
   overview,
-  summary,
+  issues,
   progress,
   speed,
-  onOpenFilter,
+  onOpen,
 }: {
   overview: OverviewData | null;
-  summary: Summary | null;
+  issues: IssueCount[];
   progress: Progress | null;
   speed: SpeedPoint[];
-  onOpenFilter: (filter: string) => void;
+  onOpen: (tab: string, filter: string) => void;
 }) {
   const { dark, color } = useColors();
 
@@ -128,8 +128,8 @@ export function Overview({
 
   const topIssues = useMemo(() => {
     const { axis, tooltip } = style;
-    const issues = (summary?.issues ?? []).slice(0, 12);
-    const byTitle = new Map(issues.map((issue) => [issue.title ?? issue.code, issue.code]));
+    const top = issues.slice(0, 12);
+    const byTitle = new Map(top.map((issue) => [issue.title ?? issue.code, issue]));
     const option: ChartOption = {
       tooltip: { ...tooltip, trigger: "axis", axisPointer: { type: "shadow" } },
       grid: { left: 270, right: 48, top: 2, bottom: 2 },
@@ -137,7 +137,7 @@ export function Overview({
       yAxis: {
         type: "category",
         inverse: true,
-        data: issues.map((issue) => issue.title ?? issue.code),
+        data: top.map((issue) => issue.title ?? issue.code),
         ...axis,
         axisTick: { show: false },
         axisLabel: { color: color("--ink"), fontFamily: CHART_TEXT, fontSize: 13, width: 255, overflow: "truncate" },
@@ -146,13 +146,13 @@ export function Overview({
         {
           type: "bar",
           barCategoryGap: "30%",
-          data: issues.map((issue) => ({ value: issue.count, itemStyle: { color: color(severityColor(issue.severity)) } })),
+          data: top.map((issue) => ({ value: issue.count, itemStyle: { color: color(severityColor(issue.severity)) } })),
           label: { show: true, position: "right", color: color("--ink-2"), fontFamily: CHART_FIGURES, fontSize: 13 },
         },
       ],
     };
-    return { option, byTitle, height: Math.max(80, issues.length * 28 + 8) };
-  }, [summary, style]);
+    return { option, byTitle, height: Math.max(80, top.length * 28 + 8) };
+  }, [issues, style]);
 
   const speedChart = useMemo<ChartOption>(() => {
     const { axis, tooltip } = style;
@@ -194,13 +194,13 @@ export function Overview({
           value={`${percent(indexable, overview.pages)}%`}
           name={`индексируется, ${formatCount(indexable)}`}
           colour={indexable > 0 ? "--ok" : undefined}
-          onClick={() => onOpenFilter("html")}
+          onClick={() => onOpen("internal", "html")}
         />
         <Kpi
           value={formatCount(errors)}
           name="ошибок ответа"
           colour={errors > 0 ? "--bad" : "--ok"}
-          onClick={errors > 0 ? () => onOpenFilter("4xx") : undefined}
+          onClick={errors > 0 ? () => onOpen("response_codes", "4xx") : undefined}
         />
         <Kpi value={`${Math.round(ttfb)} мс`} name="средний ответ" colour={ttfb < 300 ? "--ok" : ttfb < 1000 ? "--warn" : "--bad"} />
         <Kpi value={formatBytes(progress?.bytes || overview.bytes)} name="скачано" />
@@ -228,7 +228,7 @@ export function Overview({
           <h3>Коды ответов</h3>
           <ShareBar
             items={overview.statuses.map(([key, count]) => ({ key, label: statusLabels[key] ?? key, count, colour: statusColor(key) }))}
-            onOpen={(key) => statusFilter[key] && onOpenFilter(statusFilter[key])}
+            onOpen={(key) => statusFilter[key] && onOpen(...statusFilter[key])}
           />
         </div>
         <div className="panel">
@@ -240,7 +240,7 @@ export function Overview({
               count,
               colour: indexabilityColor(key),
             }))}
-            onOpen={(key) => indexabilityFilter[key] && onOpenFilter(indexabilityFilter[key])}
+            onOpen={(key) => indexabilityFilter[key] && onOpen(...indexabilityFilter[key])}
           />
         </div>
         <div className="panel">
@@ -262,8 +262,8 @@ export function Overview({
               option={topIssues.option}
               height={topIssues.height}
               onClick={(title) => {
-                const code = topIssues.byTitle.get(title);
-                if (code) onOpenFilter(`issue:${code}`);
+                const issue = topIssues.byTitle.get(title);
+                if (issue?.tab) onOpen(issue.tab, `issue:${issue.code}`);
               }}
             />
           </div>

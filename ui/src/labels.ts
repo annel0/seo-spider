@@ -89,6 +89,16 @@ export const severityColor = (severity: Severity | null) =>
 export const statusClass = (status: number) =>
   status === 0 ? "no_response" : `${Math.floor(status / 100)}xx`;
 
+/// An address as people read it: percent-escapes of Cyrillic and the like
+/// decoded; as is when it does not decode.
+export const readableUrl = (url: string) => {
+  try {
+    return decodeURI(url);
+  } catch {
+    return url;
+  }
+};
+
 export const formatCount = (value: number) => new Intl.NumberFormat("ru-RU").format(Math.round(value));
 
 export const formatBytes = (bytes: number) => {

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type UrlDetail } from "../api";
-import { formatBytes, formatCount, severityColor, severityLabels, statusClass, statusColor } from "../labels";
+import { formatBytes, formatCount, readableUrl, severityColor, severityLabels, statusClass, statusColor } from "../labels";
 import { Icon } from "./Icon";
 
 type Tab = "summary" | "issues" | "headers" | "custom";
@@ -44,7 +44,7 @@ export function DetailPanel({ urlId }: { urlId: number }) {
         </span>
         <div className="detail-url">
           <a href={detail.url} target="_blank" rel="noreferrer">
-            {detail.url}
+            {readableUrl(detail.url)}
           </a>
         </div>
       </div>
@@ -57,7 +57,7 @@ export function DetailPanel({ urlId }: { urlId: number }) {
           />
         )}
         <Flag ok={detail.in_sitemap} label="В sitemap" quiet={!detail.in_sitemap} />
-        {detail.render && <Flag ok={!detail.render.error} label={detail.render.error ? "Рендер с ошибкой" : "Отрисована"} />}
+        {detail.render && <Flag ok={!detail.render.error} label={detail.render.error ? "JS-рендер с ошибкой" : "JS выполнен"} />}
         {detail.depth !== null && <Fact value={String(detail.depth)} name="клик от главной" />}
         {detail.status > 0 && <Fact value={`${detail.ttfb_ms} мс`} name="ответ" />}
         <Fact value={formatBytes(detail.size)} name="" />
