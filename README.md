@@ -165,6 +165,27 @@ Export tabs: `summary`, `internal`, `external`, `redirects`, `javascript`
 (raw HTML against the rendered DOM), `structured_data`, `custom`, `links`,
 `issues`.
 
+## Web UI
+
+```
+cd ui && npm ci && npm run build
+seo-spider ui --db crawl.sqlite --ui-dir ui/dist     # http://127.0.0.1:7070/
+cargo build --release -p seo-cli --features embed-ui  # one binary, UI inside (after the build above)
+```
+
+Start a crawl from a URL and a preset, pause, resume or stop it, and watch
+it: a band of answered, failed and queued URLs, and an overview of charts
+(status codes and indexability as share bars, depth, response times,
+content types, the main issues) that opens the table behind any part of
+it. The internal table (Glide Data Grid) pages, sorts, filters and
+searches on the server; a row opens its detail panel. Issues are counted
+while the crawl runs and settled by the checks after it.
+
+The server listens on localhost only unless given `--token`, which then
+goes with every API request. `npm run dev` serves the UI with hot reload
+and proxies `/api` to a running `seo-spider ui`. The UI builds where
+native binaries may run (esbuild): not on a `noexec` mount.
+
 ## Acceptance site
 
 `tests/site/server.py` serves one known case per page; `tests/site/EXPECTED.md`
