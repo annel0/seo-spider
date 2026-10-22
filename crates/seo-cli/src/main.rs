@@ -184,6 +184,12 @@ struct CrawlArgs {
     /// its last layout (0: no limit).
     #[arg(long)]
     layout_budget_ms: Option<u64>,
+    /// Time zone of rendered pages, such as Europe/Moscow (the host's by default).
+    #[arg(long)]
+    timezone: Option<String>,
+    /// Language of rendered pages and the crawl's Accept-Language, such as ru-RU.
+    #[arg(long)]
+    locale: Option<String>,
     /// Measure IntersectionObserver targets for real instead of treating
     /// every target as visible (slower: needs layout).
     #[arg(long)]
@@ -438,6 +444,12 @@ fn crawl_config(args: &CrawlArgs) -> Result<CrawlConfig> {
             Some(0) => render.layout_budget_ms = None,
             Some(budget) => render.layout_budget_ms = Some(budget),
             None => {}
+        }
+        if args.timezone.is_some() {
+            render.timezone = args.timezone.clone();
+        }
+        if args.locale.is_some() {
+            render.locale = args.locale.clone();
         }
         // The renderer keeps obscura's browser user agent unless one is
         // given, so pages run the scripts a browser would get.

@@ -51,6 +51,13 @@ pub struct RenderConfig {
     /// Layout downloads no images or web fonts: only pixels need them.
     pub skip_images: bool,
     pub skip_fonts: bool,
+    /// IANA zone pages see (`Date`, `Intl`); the host's by default. A site
+    /// that renders times on its server and again in the page, in another
+    /// zone, logs hydration mismatches and re-renders.
+    pub timezone: Option<String>,
+    /// `navigator.language` and the Accept-Language of the page's requests,
+    /// such as "ru-RU"; obscura's en-US by default.
+    pub locale: Option<String>,
 }
 
 impl Default for RenderConfig {
@@ -75,6 +82,8 @@ impl Default for RenderConfig {
             intersection_full_viewport: true,
             skip_images: true,
             skip_fonts: true,
+            timezone: None,
+            locale: None,
         }
     }
 }
@@ -144,6 +153,8 @@ impl RenderPool {
             ("OBSCURA_RESOURCE_CACHE_MB", config.cache_static.then(|| config.cache_mb.to_string())),
             ("OBSCURA_FETCH_CACHE_TTL_MS", config.fetch_cache_ttl.map(|ttl| ttl.as_millis().to_string())),
             ("OBSCURA_LAYOUT_BUDGET_MS", config.layout_budget.map(|budget| budget.as_millis().to_string())),
+            // V8 reads the zone from TZ when its first isolate starts.
+            ("TZ", config.timezone.clone()),
             ("OBSCURA_INTERSECTION_FULL_VIEWPORT", config.intersection_full_viewport.then(|| "1".to_string())),
             ("OBSCURA_RENDER_SKIP_IMAGES", config.skip_images.then(|| "1".to_string())),
             ("OBSCURA_RENDER_SKIP_FONTS", config.skip_fonts.then(|| "1".to_string())),
@@ -197,6 +208,14 @@ fn spawn_worker(worker: usize, jobs: async_channel::Receiver<Job>, config: Rende
                     None,
                     config.allow_private_network,
                 ));
+                if let Some(locale) = &config.locale {
+                    context.http_client.set_accept_language(&accept_language(locale)).await;
+                }
+                let new_page = |worker: usize, context: &Arc<BrowserContext>| {
+                    let mut page = new_page(worker, context);
+                    page.set_locale_override(config.locale.clone());
+                    page
+                };
                 let mut page = new_page(worker, &context);
                 let mut rendered_on_page = 0usize;
                 while let Ok(job) = jobs.recv().await {
@@ -217,6 +236,14 @@ fn spawn_worker(worker: usize, jobs: async_channel::Receiver<Job>, config: Rende
             });
         })
         .expect("spawn render thread");
+}
+
+/// "ru-RU" -> "ru-RU,ru;q=0.9", as a browser set to that language sends.
+pub fn accept_language(locale: &str) -> String {
+    match locale.split_once('-') {
+        Some((language, _)) => format!("{locale},{language};q=0.9"),
+        None => locale.to_string(),
+    }
 }
 
 fn new_page(worker: usize, context: &Arc<BrowserContext>) -> Page {

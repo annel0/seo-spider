@@ -89,9 +89,16 @@ impl CrawlConfig {
     /// crawl of whole documents extracts links even when `extract` leaves
     /// them out, and one that reads no `<body>` (nor renders) finds pages in
     /// the sitemaps.
-    /// Returns what was changed, for the log.
+    /// A rendering locale also becomes the crawl's Accept-Language unless a
+    /// header sets one. Returns what was changed, for the log.
     pub fn resolve(&mut self) -> Vec<&'static str> {
         let mut changed = Vec::new();
+        if let Some(locale) = self.render.as_ref().and_then(|render| render.locale.as_deref()) {
+            if !self.http.headers.keys().any(|name| name.eq_ignore_ascii_case("accept-language")) {
+                self.http.headers.insert("Accept-Language".into(), seo_render::accept_language(locale));
+                changed.push("http.headers Accept-Language: from render.locale");
+            }
+        }
         if self.follow_links {
             match self.fetch {
                 FetchLevel::Full if !self.extract.links => {
@@ -289,6 +296,13 @@ pub struct RenderSettings {
     pub allow_private_network: bool,
     /// Replace a render thread's page after this many renders.
     pub recycle_after: usize,
+    /// IANA zone the rendered pages see, such as "Europe/Moscow"; the
+    /// host's when unset.
+    pub timezone: Option<String>,
+    /// The rendered pages' language, such as "ru-RU" (navigator.language,
+    /// Accept-Language); also the crawl's Accept-Language unless a header
+    /// sets one.
+    pub locale: Option<String>,
 }
 
 impl Default for RenderSettings {
@@ -309,6 +323,8 @@ impl Default for RenderSettings {
             cache_mb: render.cache_mb,
             fetch_cache_ttl_ms: render.fetch_cache_ttl.map(|ttl| ttl.as_millis() as u64),
             layout_budget_ms: render.layout_budget.map(|budget| budget.as_millis() as u64),
+            timezone: render.timezone,
+            locale: render.locale,
             intersection_full_viewport: render.intersection_full_viewport,
             skip_images: render.skip_images,
             skip_fonts: render.skip_fonts,
@@ -340,6 +356,8 @@ impl RenderSettings {
             cache_mb: self.cache_mb,
             fetch_cache_ttl: self.fetch_cache_ttl_ms.map(Duration::from_millis),
             layout_budget: self.layout_budget_ms.map(Duration::from_millis),
+            timezone: self.timezone.clone(),
+            locale: self.locale.clone(),
             intersection_full_viewport: self.intersection_full_viewport,
             skip_images: self.skip_images,
             skip_fonts: self.skip_fonts,
@@ -376,6 +394,18 @@ mod tests {
         assert_eq!(config.render.unwrap().threads, 2);
         assert!(toml::from_str::<CrawlConfig>("fetch = \"everything\"").is_err());
         assert!(toml::from_str::<CrawlConfig>("max_url = 5").is_err());
+    }
+
+    #[test]
+    fn a_render_locale_sets_the_crawl_accept_language_unless_given() {
+        let render = RenderSettings { locale: Some("ru-RU".into()), ..RenderSettings::default() };
+        let mut config = CrawlConfig { render: Some(render.clone()), ..CrawlConfig::default() };
+        config.resolve();
+        assert_eq!(config.http.headers.get("Accept-Language").map(String::as_str), Some("ru-RU,ru;q=0.9"));
+        let mut given = CrawlConfig { render: Some(render), ..CrawlConfig::default() };
+        given.http.headers.insert("accept-language".into(), "de".into());
+        given.resolve();
+        assert_eq!(given.http.headers.len(), 1);
     }
 
     #[test]
