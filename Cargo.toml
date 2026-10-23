@@ -9,6 +9,20 @@ members = [
     "crates/seo-server",
     "crates/seo-export",
     "crates/seo-cli",
+    "crates/seo-desktop",
+    "tools/bench-site",
+]
+# The desktop app needs the system's webview to build (WebKitGTK on Linux):
+# builds and tests leave it out unless it is named.
+default-members = [
+    "crates/seo-page",
+    "crates/seo-checks",
+    "crates/seo-store",
+    "crates/seo-render",
+    "crates/seo-crawl",
+    "crates/seo-server",
+    "crates/seo-export",
+    "crates/seo-cli",
     "tools/bench-site",
 ]
 # The spike that settled the architecture stays a separate package.

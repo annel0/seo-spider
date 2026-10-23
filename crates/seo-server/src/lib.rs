@@ -77,7 +77,14 @@ const READERS: usize = 4;
 
 /// Serves until the process ends.
 pub async fn serve(options: ServerOptions) -> Result<()> {
-    if !options.bind.ip().is_loopback() && options.token.is_none() {
+    let listener = tokio::net::TcpListener::bind(options.bind).await?;
+    serve_on(listener, options).await
+}
+
+/// Serves on a socket already bound (the desktop app binds one first);
+/// `options.bind` is where it is.
+pub async fn serve_on(listener: tokio::net::TcpListener, options: ServerOptions) -> Result<()> {
+    if !listener.local_addr()?.ip().is_loopback() && options.token.is_none() {
         bail!("слушать не на localhost можно только с --token: без него обходом управляет любой, кто видит порт");
     }
     // Creates the file and its schema when there is none yet.
@@ -133,7 +140,6 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
         }));
     }
     let app = api.merge(assets::router(options.ui_dir.clone()));
-    let listener = tokio::net::TcpListener::bind(options.bind).await?;
     eprintln!("seo-spider ui: http://{}/  (база {})", options.bind, seo_store::describe(options.db.as_os_str()));
     axum::serve(listener, app).await?;
     Ok(())

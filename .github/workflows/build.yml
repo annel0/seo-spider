@@ -1,5 +1,6 @@
 # Builds and tests seo-spider on Linux, Windows and macOS, with the web UI
-# built into the binary, and publishes the binaries on a `v*` tag.
+# built into the binary, builds the desktop app's installers (Tauri), and
+# publishes both on a `v*` tag.
 #
 # obscura (the fork, at the revision in OBSCURA_REV) is checked out next to
 # this repository, where Cargo.toml's path dependencies expect it. Cargo
@@ -89,7 +90,8 @@ jobs:
 
       - name: Test
         working-directory: seo-spider
-        run: cargo test --release --workspace
+        # The desktop app builds in its own job, with the system's webview.
+        run: cargo test --release --workspace --exclude seo-desktop
 
       - name: Build
         working-directory: seo-spider
@@ -113,15 +115,117 @@ jobs:
       - name: Check the binary starts
         run: '"seo-spider/target/release/${{ matrix.binary }}" --version'
 
+      # The test site crawled as it sends its pages, rendered, and rendered
+      # with its sitemap, and checked against tests/site/EXPECTED.md.
+      - name: Crawl the test site
+        working-directory: seo-spider
+        run: |
+          python=$(command -v python3 || command -v python)
+          "$python" tests/site/server.py 8099 &
+          for attempt in $(seq 1 30); do
+            "$python" -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8099/robots.txt')" 2>/dev/null && break
+            sleep 1
+          done
+          spider="$PWD/target/release/${{ matrix.binary }}"
+          mkdir -p acceptance && cd acceptance
+          site=http://127.0.0.1:8099/
+          "$spider" crawl "$site" --db raw.sqlite --extract-css price=.price --search kettle=kettle
+          "$spider" crawl "$site" --db js.sqlite --render-threads 2
+          "$spider" crawl "$site" --db sm.sqlite --render-threads 2 --sitemaps
+          "$spider" export --db raw.sqlite --format csv -o out-raw
+          "$python" ../tests/site/check.py
+
       - uses: actions/upload-artifact@v4
         with:
           name: seo-spider-${{ matrix.name }}
           path: ${{ steps.package.outputs.file }}
           if-no-files-found: error
 
+  desktop:
+    name: desktop ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, name: linux-x64 }
+          - { os: windows-2022, name: windows-x64 }
+          - { os: macos-14, name: macos-arm64 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: seo-spider
+
+      - name: obscura revision
+        id: obscura
+        run: echo "rev=$(tr -d '[:space:]' < seo-spider/OBSCURA_REV)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          repository: annel0/obscura
+          ref: ${{ steps.obscura.outputs.rev }}
+          path: obscura
+
+      - name: Set obscura's files to its commit time
+        run: |
+          time=$(git -C obscura log -1 --format=%ct)
+          python=$(command -v python3 || command -v python)
+          "$python" - "$time" <<'EOF'
+          import os, sys
+          stamp = int(sys.argv[1])
+          for root, dirs, files in os.walk("obscura"):
+              dirs[:] = [d for d in dirs if d != ".git"]
+              for name in files:
+                  os.utime(os.path.join(root, name), (stamp, stamp))
+          EOF
+
+      - name: WebKitGTK and the bundlers' tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev patchelf
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: seo-spider/ui/package-lock.json
+
+      - name: Build the UI
+        working-directory: seo-spider/ui
+        run: npm ci && npm run build
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: seo-spider -> target
+          key: desktop-obscura-${{ steps.obscura.outputs.rev }}
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Test
+        working-directory: seo-spider
+        run: cargo test --release -p seo-desktop
+
+      - name: Build the installers
+        working-directory: seo-spider/crates/seo-desktop
+        run: npx --yes @tauri-apps/cli@2 build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: seo-spider-desktop-${{ matrix.name }}
+          path: |
+            seo-spider/target/release/bundle/dmg/*.dmg
+            seo-spider/target/release/bundle/msi/*.msi
+            seo-spider/target/release/bundle/nsis/*.exe
+            seo-spider/target/release/bundle/deb/*.deb
+            seo-spider/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, desktop]
     runs-on: ubuntu-latest
     permissions:
       contents: write

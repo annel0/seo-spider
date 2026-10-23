@@ -29,6 +29,14 @@ silicon), with the web UI built in, are attached to each
 them too (the run's artifacts). On macOS a downloaded binary is quarantined
 until `xattr -d com.apple.quarantine seo-spider`.
 
+The desktop app is the same crawler and UI in a window, no terminal or
+browser needed: `.dmg` for macOS, `.msi` or a setup `.exe` for Windows,
+`.deb` or `.AppImage` for Linux, on the same release. Its crawls are kept
+in `crawl.sqlite` in the app's data folder, exports go to Downloads. The
+installers are not signed: macOS opens the app after a right click, Open
+(or `xattr -dr com.apple.quarantine /Applications/seo-spider.app`), Windows
+after SmartScreen's More info, Run anyway.
+
 ## Build
 
 obscura must be checked out next to this repository (`../obscura`), at the
@@ -42,8 +50,18 @@ git -C ../obscura checkout "$(cat OBSCURA_REV)"
 cargo build --release -p seo-cli --features embed-ui
 ```
 
+The desktop app (`crates/seo-desktop`, Tauri) builds with the system's
+webview (WebKitGTK 4.1 on Linux: `libwebkit2gtk-4.1-dev`), so the
+workspace leaves it out unless named:
+
+```bash
+(cd crates/seo-desktop && npx @tauri-apps/cli@2 build)
+```
+
 `.github/workflows/build.yml` does the same on Linux, Windows and macOS,
-runs the tests, and publishes the binaries on a `v*` tag. Compiled
+runs the tests, crawls the test site (as sent, rendered, with its sitemap)
+and checks it against `tests/site/EXPECTED.md`, builds the desktop
+installers, and publishes all of it on a `v*` tag. Compiled
 dependencies are cached, so a change that leaves obscura alone rebuilds
 only this workspace's crates.
 
@@ -343,7 +361,8 @@ same report.
 ## Acceptance site
 
 `tests/site/server.py` serves one known case per page; `tests/site/EXPECTED.md`
-lists what a crawl must report.
+lists what a crawl must report, and `tests/site/check.py` checks three
+crawls of it (as CI runs them) against it.
 
 ```bash
 python3 tests/site/server.py 8099
