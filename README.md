@@ -1,5 +1,7 @@
 # seo-spider
 
+[![build](https://github.com/annel0/seo-spider/actions/workflows/build.yml/badge.svg)](https://github.com/annel0/seo-spider/actions/workflows/build.yml)
+
 SEO crawler in the spirit of Screaming Frog SEO Spider, in Rust, with
 JavaScript rendering on an embedded [obscura](https://github.com/annel0/obscura)
 engine (branch `fix/chrome-parity`) instead of headless Chrome.
@@ -12,19 +14,38 @@ engine (branch `fix/chrome-parity`) instead of headless Chrome.
 | `seo-render` | Pool of render threads, each with its own obscura `Page`; snapshots once the content settles |
 | `seo-crawl` | Frontier, HTTP fetch without following redirects, robots.txt, sitemaps, click depth, checks run |
 | `seo-checks` | 100 checks: the SEOnaut catalog (MIT) plus the JavaScript tab and a few more |
-| `seo-store` | SQLite storage: crawls, URLs, facts (zstd JSON), renders, kept documents, issues |
+| `seo-store` | Storage over SQLite, PostgreSQL or MySQL: crawls, URLs, facts (zstd JSON), renders, kept documents, issues |
+| `seo-export` | The tabs as CSV files or one XLSX workbook |
+| `seo-server` | The web UI's server: crawl control, progress, tabs, exports |
 | `seo-cli` | The `seo-spider` binary |
 
 `spike/` is the throwaway benchmark that settled the architecture.
 
+## Download
+
+Binaries for Linux (x64, glibc 2.35+), Windows (x64) and macOS (Apple
+silicon), with the web UI built in, are attached to each
+[release](https://github.com/annel0/seo-spider/releases); every push builds
+them too (the run's artifacts). On macOS a downloaded binary is quarantined
+until `xattr -d com.apple.quarantine seo-spider`.
+
 ## Build
 
-obscura must be checked out next to this repository (`../obscura`); the
-workspace repeats its `[patch.crates-io]` and `panic = "unwind"`.
+obscura must be checked out next to this repository (`../obscura`), at the
+revision in `OBSCURA_REV`; the workspace repeats its `[patch.crates-io]` and
+`panic = "unwind"`. The UI needs Node 20 or later.
 
 ```bash
-cargo build --release -p seo-cli
+git clone https://github.com/annel0/obscura ../obscura
+git -C ../obscura checkout "$(cat OBSCURA_REV)"
+(cd ui && npm ci && npm run build)
+cargo build --release -p seo-cli --features embed-ui
 ```
+
+`.github/workflows/build.yml` does the same on Linux, Windows and macOS,
+runs the tests, and publishes the binaries on a `v*` tag. Compiled
+dependencies are cached, so a change that leaves obscura alone rebuilds
+only this workspace's crates.
 
 ## Use
 

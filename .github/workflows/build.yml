@@ -1,0 +1,137 @@
+# Builds and tests seo-spider on Linux, Windows and macOS, with the web UI
+# built into the binary, and publishes the binaries on a `v*` tag.
+#
+# obscura (the fork, at the revision in OBSCURA_REV) is checked out next to
+# this repository, where Cargo.toml's path dependencies expect it. Cargo
+# judges path dependencies by the times of their files: a fresh checkout
+# would look changed every run and rebuild obscura and deno_core, the bulk of
+# the build. Its files are set to the time of its commit, so the compiled
+# dependencies the cache keeps stay fresh until OBSCURA_REV moves.
+
+name: build
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04: its glibc (2.35) is old enough for Debian 12 and the like.
+          - { os: ubuntu-22.04, name: linux-x64, binary: seo-spider, archive: tar.gz }
+          - { os: windows-2022, name: windows-x64, binary: seo-spider.exe, archive: zip }
+          - { os: macos-14, name: macos-arm64, binary: seo-spider, archive: tar.gz }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: seo-spider
+
+      - name: obscura revision
+        id: obscura
+        run: echo "rev=$(tr -d '[:space:]' < seo-spider/OBSCURA_REV)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          repository: annel0/obscura
+          ref: ${{ steps.obscura.outputs.rev }}
+          path: obscura
+
+      - name: Set obscura's files to its commit time
+        run: |
+          time=$(git -C obscura log -1 --format=%ct)
+          # Windows runners call it python.
+          python=$(command -v python3 || command -v python)
+          "$python" - "$time" <<'EOF'
+          import os, sys
+          stamp = int(sys.argv[1])
+          for root, dirs, files in os.walk("obscura"):
+              dirs[:] = [d for d in dirs if d != ".git"]
+              for name in files:
+                  os.utime(os.path.join(root, name), (stamp, stamp))
+          EOF
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: seo-spider/ui/package-lock.json
+
+      - name: Build the UI
+        working-directory: seo-spider/ui
+        run: npm ci && npm run build
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: seo-spider -> target
+          key: obscura-${{ steps.obscura.outputs.rev }}
+          # Caches are kept from the main branch only: a repository has 10 GB
+          # of them, and each OS's compiled dependencies take a few.
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Test
+        working-directory: seo-spider
+        run: cargo test --release --workspace
+
+      - name: Build
+        working-directory: seo-spider
+        run: cargo build --release -p seo-cli --features embed-ui
+
+      - name: Package
+        id: package
+        run: |
+          name="seo-spider-${{ matrix.name }}"
+          mkdir -p "dist/$name"
+          cp "seo-spider/target/release/${{ matrix.binary }}" "dist/$name/"
+          cp seo-spider/README.md "dist/$name/"
+          cd dist
+          if [ "${{ matrix.archive }}" = zip ]; then
+            7z a -tzip "$name.zip" "$name" > /dev/null
+          else
+            tar -czf "$name.tar.gz" "$name"
+          fi
+          echo "file=dist/$name.${{ matrix.archive }}" >> "$GITHUB_OUTPUT"
+
+      - name: Check the binary starts
+        run: '"seo-spider/target/release/${{ matrix.binary }}" --version'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: seo-spider-${{ matrix.name }}
+          path: ${{ steps.package.outputs.file }}
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
