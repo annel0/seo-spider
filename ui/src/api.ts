@@ -255,6 +255,41 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   return response.status === 204 ? (undefined as T) : ((await response.json()) as T);
 }
 
+/// Two crawls compared, the older first; each list cut at 500 rows (of
+/// each field, for changes), `totals` count them whole.
+export type DiffUrl = { url: string; id: number; status: number; internal: boolean };
+export type DiffChange = { url: string; id: number; field: string; before: string | null; after: string | null };
+export type DiffIssue = { url: string; id: number; code: string };
+export type IssueShift = {
+  code: string;
+  title: string | null;
+  severity: Severity | null;
+  before: number;
+  after: number;
+  appeared: number;
+  fixed: number;
+};
+export type Comparison = {
+  old: number;
+  new: number;
+  /// How the crawls' settings differ where it shows.
+  notes: string[];
+  totals: {
+    added: number;
+    removed: number;
+    changed: Record<string, number>;
+    changed_urls: number;
+    new_issues: number;
+    fixed_issues: number;
+  };
+  added: DiffUrl[];
+  removed: DiffUrl[];
+  changed: DiffChange[];
+  new_issues: DiffIssue[];
+  fixed_issues: DiffIssue[];
+  shifts: IssueShift[];
+};
+
 export const api = {
   presets: () => call<Preset[]>("/api/presets"),
   presetConfig: (name: string) => call<Json>(`/api/presets/${name}/config`),
@@ -279,6 +314,7 @@ export const api = {
   content: (id: number, live = false) => call<PageContent>(`/api/urls/${id}/content${live ? "?live=true" : ""}`),
   brokenLinks: (id: number, offset = 0, limit = 200) =>
     call<LinkPage>(`/api/crawls/${id}/broken-links?offset=${offset}&limit=${limit}`),
+  compare: (id: number, other: number) => call<Comparison>(`/api/crawls/${id}/compare?with=${other}`),
   // EventSource sends no headers: the token goes in the address.
   events: (id: number) =>
     new EventSource(`/api/crawls/${id}/events${token ? `?token=${encodeURIComponent(token)}` : ""}`),
@@ -300,6 +336,7 @@ const withToken = (params: URLSearchParams) => {
 export const downloads = {
   xlsx: (id: number) => `/api/crawls/${id}/export.xlsx${withToken(new URLSearchParams())}`,
   brokenLinks: (id: number) => `/api/crawls/${id}/broken-links.csv${withToken(new URLSearchParams())}`,
+  compare: (id: number, other: number) => `/api/crawls/${id}/compare.csv${withToken(new URLSearchParams({ with: String(other) }))}`,
   csv: (id: number, tab: string, query: RowsQuery) => `/api/crawls/${id}/tabs/${tab}/export.csv${withToken(rowsParams(query))}`,
 };
 

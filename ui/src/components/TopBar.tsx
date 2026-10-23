@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { isActive, type Crawl, type Overview, type Preset, type Progress } from "../api";
 import type { SpeedPoint } from "../hooks";
-import { formatBytes, formatCount, formatDuration, stateLabels, statusColor, statusLabels } from "../labels";
+import { formatBytes, formatCount, formatDuration, hostOf, stateLabels, statusColor, statusLabels } from "../labels";
 import { Icon } from "./Icon";
 
 const presetLabels: Record<string, string> = {
@@ -286,10 +286,3 @@ function Readout({ value, name, colour }: { value: string; name: string; colour?
   );
 }
 
-const hostOf = (url: string) => {
-  try {
-    return new URL(url).host;
-  } catch {
-    return url;
-  }
-};

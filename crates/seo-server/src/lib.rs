@@ -5,6 +5,7 @@
 //! that file read-only next to the crawl writing it.
 
 mod assets;
+mod compare;
 mod content;
 mod crawls;
 mod links;
@@ -102,6 +103,8 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
         .route("/api/urls/{id}/content", get(content::content))
         .route("/api/crawls/{id}/broken-links", get(links::broken_links))
         .route("/api/crawls/{id}/broken-links.csv", get(links::broken_links_csv))
+        .route("/api/crawls/{id}/compare", get(compare::compare))
+        .route("/api/crawls/{id}/compare.csv", get(compare::compare_csv))
         .route("/api/crawls/{id}/export.xlsx", get(export_xlsx))
         .with_state(state);
     if let Some(token) = options.token.clone() {

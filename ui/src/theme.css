@@ -1290,3 +1290,198 @@ button.link:hover {
     border-bottom: 1px solid var(--rule);
   }
 }
+
+/* Two crawls compared: the figures pick a list; issues as a balance of
+   fixed (left, green) against appeared (right, red). */
+
+.compare-span {
+  color: var(--ink-2);
+  font-family: var(--figures);
+  white-space: nowrap;
+}
+
+.compare-span .arrow,
+.change-line .arrow,
+.shift-line .arrow {
+  color: var(--ink-3);
+}
+
+.kpi.picked {
+  box-shadow: inset 0 -3px 0 var(--accent), 1px 0 0 var(--rule), 0 1px 0 var(--rule);
+}
+
+.shift-lines {
+  display: flex;
+  flex-direction: column;
+}
+
+.shift-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 420px) 110px 56px;
+  align-items: center;
+  gap: 14px;
+  height: 30px;
+  box-shadow: 0 1px 0 var(--rule);
+}
+
+.shift-line .name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.shift-line .axis {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  height: 100%;
+}
+
+.shift-line .half {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.shift-line .half.fixed {
+  justify-content: flex-end;
+  box-shadow: 1px 0 0 var(--rule-strong);
+}
+
+.shift-line .fill {
+  height: 10px;
+}
+
+.shift-line .fixed .fill {
+  background: var(--ok);
+}
+
+.shift-line .appeared .fill {
+  background: var(--bad);
+}
+
+.shift-line .num {
+  padding: 0 6px;
+  font-family: var(--figures);
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.shift-line .counts,
+.shift-line .delta {
+  font-family: var(--figures);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.shift-line .counts {
+  color: var(--ink-2);
+}
+
+.shift-line .delta {
+  font-weight: 600;
+}
+
+.compare-fields {
+  padding: 10px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--rule);
+}
+
+.compare-fields .segmented {
+  flex-wrap: wrap;
+}
+
+.change-line {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  min-height: 46px;
+  box-shadow: 0 1px 0 var(--rule);
+}
+
+.change-line .field {
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  background: var(--panel-2);
+  color: var(--ink-2);
+  font-weight: 600;
+}
+
+.change-line .where {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  min-width: 0;
+  padding: 6px 12px;
+}
+
+.change-line .where > button {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.change-line .values {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+}
+
+.change-line .value {
+  overflow-wrap: anywhere;
+}
+
+.change-line .value.old {
+  color: var(--ink-3);
+  text-decoration: line-through;
+}
+
+.change-line .value.none {
+  color: var(--ink-3);
+}
+
+.change-line .code {
+  display: inline-grid;
+  place-items: center;
+  min-width: 40px;
+  height: 20px;
+  padding: 0 6px;
+  font-family: var(--figures);
+  font-weight: 600;
+  color: #fff;
+}
+
+.cut {
+  padding: 10px 16px;
+  color: var(--ink-3);
+}
+
+.compare-notes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  padding: 8px 16px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink-2);
+}
+
+.compare-notes > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.compare-notes svg {
+  color: var(--warn);
+}

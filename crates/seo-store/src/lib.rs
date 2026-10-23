@@ -8,6 +8,7 @@ use std::cell::RefCell;
 use std::ffi::OsStr;
 use std::path::Path;
 
+mod compare;
 mod graph;
 mod mysql;
 mod postgres;
@@ -16,6 +17,7 @@ mod sql;
 mod sqlite;
 mod view;
 
+pub use compare::{CrawlDiff, DiffChange, DiffIssue, DiffUrl, IssueShift, FIELDS as COMPARED_FIELDS};
 pub use graph::{LinkRow, Source, LINK, REDIRECT};
 pub use sql::{Backend, Dialect, FromValue, Param, Row, Value};
 pub use view::{CrawlInfo, Overview, RowQuery, RowsPage, StoredRow, FILTERS, SCOPES};

@@ -11,6 +11,7 @@ import {
   type TabDef,
 } from "./api";
 import { BrokenLinks } from "./components/BrokenLinks";
+import { CompareView, comparable } from "./components/CompareView";
 import { DetailPanel } from "./components/DetailPanel";
 import { Icon } from "./components/Icon";
 import { IssuesView } from "./components/IssuesView";
@@ -177,6 +178,14 @@ export function App() {
   const tab = view.kind === "tab" ? tabs.find((item) => item.key === view.tab) : undefined;
   const filter = view.kind === "tab" ? tab?.filters.find((item) => item.key === view.filter) : undefined;
   const query = { filter: view.kind === "tab" ? view.filter : "all", search, sort };
+  const detail = selected !== null && (
+    <div className="detail">
+      <button className="ghost" onClick={() => setSelected(null)} aria-label="Закрыть" style={{ position: "absolute", right: 4, top: 4 }}>
+        <Icon name="cross" />
+      </button>
+      <DetailPanel urlId={selected} onOpen={setSelected} />
+    </div>
+  );
 
   return (
     <div className="app">
@@ -229,7 +238,7 @@ export function App() {
         />
       ) : (
       <div className="main">
-        <Sidebar tabs={tabs} issues={issues} broken={broken} view={view} onView={open} />
+        <Sidebar tabs={tabs} issues={issues} broken={broken} comparable={comparable(crawl, crawls).length} view={view} onView={open} />
         <main className="work">
           {crawlId === null ? (
             <div className="empty">
@@ -245,14 +254,12 @@ export function App() {
           ) : view.kind === "broken" ? (
             <>
               <BrokenLinks crawlId={crawlId} onSelect={setSelected} />
-              {selected !== null && (
-                <div className="detail">
-                  <button className="ghost" onClick={() => setSelected(null)} aria-label="Закрыть" style={{ position: "absolute", right: 4, top: 4 }}>
-                    <Icon name="cross" />
-                  </button>
-                  <DetailPanel urlId={selected} onOpen={setSelected} />
-                </div>
-              )}
+              {detail}
+            </>
+          ) : view.kind === "compare" && crawl ? (
+            <>
+              <CompareView key={crawl.id} crawl={crawl} crawls={crawls} onSelect={setSelected} />
+              {detail}
             </>
           ) : !tab ? (
             <div className="empty">Загрузка</div>
@@ -297,14 +304,7 @@ export function App() {
                   onTotal={setTotal}
                 />
               </div>
-              {selected !== null && (
-                <div className="detail">
-                  <button className="ghost" onClick={() => setSelected(null)} aria-label="Закрыть" style={{ position: "absolute", right: 4, top: 4 }}>
-                    <Icon name="cross" />
-                  </button>
-                  <DetailPanel urlId={selected} onOpen={setSelected} />
-                </div>
-              )}
+              {detail}
             </>
           )}
         </main>

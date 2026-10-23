@@ -6,6 +6,7 @@ export type View =
   | { kind: "overview" }
   | { kind: "issues" }
   | { kind: "broken" }
+  | { kind: "compare" }
   | { kind: "tab"; tab: string; filter: string };
 
 /// Where to go: the overview, the issues, then the tabs. The open tab
@@ -14,6 +15,7 @@ export function Sidebar({
   tabs,
   issues,
   broken,
+  comparable,
   view,
   onView,
 }: {
@@ -21,6 +23,8 @@ export function Sidebar({
   issues: IssueCount[];
   /// Broken links of the crawl; null until its link graph exists.
   broken: number | null;
+  /// Other crawls of the site to compare with.
+  comparable: number;
   view: View;
   onView: (view: View) => void;
 }) {
@@ -46,6 +50,14 @@ export function Sidebar({
           <span className="label">Битые ссылки</span>
           {broken > 0 && <span className="square" style={{ background: "var(--bad)" }} />}
           <span className="count">{formatCount(broken)}</span>
+        </div>
+      )}
+
+      {comparable > 0 && (
+        <div className={`nav-row top ${view.kind === "compare" ? "on" : ""}`} onClick={() => onView({ kind: "compare" })}>
+          <Icon name="compare" />
+          <span className="label">Сравнение</span>
+          <span className="count">{formatCount(comparable)}</span>
         </div>
       )}
 

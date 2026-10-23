@@ -101,6 +101,23 @@ export const readableUrl = (url: string) => {
   }
 };
 
+export const hostOf = (url: string) => {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+};
+
+/// When a crawl started, as 23.10 17:50 in the browser's time zone; the
+/// server writes UTC.
+export const formatWhen = (stamp: string) => {
+  const date = new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(stamp) ? stamp : `${stamp.replace(" ", "T")}Z`);
+  if (Number.isNaN(date.getTime())) return stamp;
+  const two = (value: number) => String(value).padStart(2, "0");
+  return `${two(date.getDate())}.${two(date.getMonth() + 1)} ${two(date.getHours())}:${two(date.getMinutes())}`;
+};
+
 /// The Russian form for a count: plural(5, ["блок", "блока", "блоков"]).
 export const plural = (count: number, [one, few, many]: [string, string, string]) => {
   const tens = count % 100;
