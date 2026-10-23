@@ -73,6 +73,7 @@ fn links(ctx: &Ctx, doc: &PageFacts, out: &mut Vec<Issue>) {
     if doc.links.is_empty() {
         out.push(Issue::new("dead_end"));
     }
+    credentials(doc, out);
 
     // A page that itself lives on localhost may link to it.
     if !ctx.url.host_str().is_some_and(is_local_host) {
@@ -85,6 +86,20 @@ fn links(ctx: &Ctx, doc: &PageFacts, out: &mut Vec<Issue>) {
         if !local.is_empty() {
             out.push(Issue::with_detail("localhost_links", urls::examples(&local, 3)));
         }
+    }
+}
+
+/// `https://mailto:info@site/`: a mailto written as a web address. The
+/// crawl reads such a link without the login.
+fn credentials(doc: &PageFacts, out: &mut Vec<Issue>) {
+    let found: Vec<&str> = doc
+        .links
+        .iter()
+        .filter(|link| Url::parse(&link.href).ok().is_some_and(|url| !url.username().is_empty() || url.password().is_some()))
+        .map(|link| link.href.as_str())
+        .collect();
+    if !found.is_empty() {
+        out.push(Issue::with_detail("link_with_credentials", urls::examples(&found, 3)));
     }
 }
 
@@ -172,6 +187,13 @@ mod tests {
         // 100 more plus the one every good page has.
         assert!(page_with_body(&many_links(100)).has("too_many_links"));
         assert!(page_with_body(&many_links(110)).has("too_many_links"));
+    }
+
+    #[test]
+    fn a_mailto_written_as_a_web_address() {
+        assert!(!Fixture::good().has("link_with_credentials"));
+        assert!(page_with_body(r#"<a href="https://mailto:info@example.com/">info@example.com</a>"#).has("link_with_credentials"));
+        assert!(!page_with_body(r#"<a href="mailto:info@example.com">info@example.com</a>"#).has("link_with_credentials"));
     }
 
     #[test]

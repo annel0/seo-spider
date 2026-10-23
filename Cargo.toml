@@ -78,6 +78,8 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+base64 = "0.22"
+percent-encoding = "2"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 rust_xlsxwriter = { version = "0.79", features = ["constant_memory"] }
 csv = "1"

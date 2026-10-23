@@ -1211,8 +1211,20 @@ fn discover_from(
             queue(location, depth, Edge::Redirect);
         }
     }
+    // A script's iframe on another site (a captcha, a chat, a widget) is
+    // the widget's business, not the page's, and often a new address on
+    // every view: from the rendered document, only the site's own iframes
+    // and those the HTML has are checked.
+    let [raw, rendered] = documents;
+    let in_html: FxHashSet<&str> = raw.map(|facts| facts.iframes.iter().map(String::as_str).collect()).unwrap_or_default();
+    let shown = |href: &&String, after_script: bool| {
+        !after_script
+            || raw.is_none()
+            || in_html.contains(href.as_str())
+            || Url::parse(href).ok().is_some_and(|url| rules.scope.internal(&url))
+    };
     // Only internal documents are read, so their links are followed.
-    for facts in documents.into_iter().flatten() {
+    for (facts, after_script) in [(raw, false), (rendered, true)].into_iter().filter_map(|(facts, after)| facts.map(|facts| (facts, after))) {
         let next = depth + 1;
         for link in &facts.links {
             if link.href.is_empty() || (link.nofollow && !rules.follow_nofollow) {
@@ -1228,7 +1240,7 @@ fn discover_from(
             .iter()
             .chain(facts.hreflangs.iter().map(|hreflang| &hreflang.href))
             .chain(facts.pagination.iter().map(|page| &page.href))
-            .chain(&facts.iframes);
+            .chain(facts.iframes.iter().filter(|href| shown(href, after_script)));
         for href in alternates.filter(|href| !href.is_empty()) {
             queue(href, next, Edge::Other);
         }
@@ -1327,12 +1339,16 @@ impl Filters {
         })
     }
 
-    /// The URL as the crawl knows it: no fragment, no stripped parameters.
+    /// The URL as the crawl knows it: no fragment, no stripped parameters,
+    /// no login: `https://mailto:info@site/` (a mailto gone wrong) is the
+    /// site's own page, and its credentials are never sent.
     fn normalize(&self, mut url: Url) -> Option<Url> {
         if !matches!(url.scheme(), "http" | "https") {
             return None;
         }
         url.set_fragment(None);
+        let _ = url.set_username("");
+        let _ = url.set_password(None);
         if !self.strip.is_empty() && url.query().is_some() {
             let kept: Vec<(String, String)> = url
                 .query_pairs()
@@ -1655,6 +1671,43 @@ mod tests {
         assert_eq!(missing, [format!("{}b", summary_start(&store))]);
         drop(store);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn script_made_iframes_of_other_sites_are_not_checked() {
+        let start = Url::parse("https://e.com/").unwrap();
+        let config = CrawlConfig::new(start.clone());
+        let rules = Rules {
+            scope: Scope::new(std::slice::from_ref(&start), false),
+            filters: Filters::new(&config).unwrap(),
+            follow_links: true,
+            follow_nofollow: false,
+            check_external: true,
+            check_resources: true,
+        };
+        let facts = |html: &str, source| seo_page::extract(html, &start, source);
+        let raw = facts(r#"<iframe src="https://maps.example/embed"></iframe>"#, Source::Raw);
+        let rendered = facts(
+            r#"<iframe src="https://maps.example/embed"></iframe><iframe src="https://captcha.example/anchor?cb=x1"></iframe>
+               <iframe src="/widget"></iframe>"#,
+            Source::Rendered,
+        );
+        let http = HttpInfo { url: start.to_string(), status: 200, ..Default::default() };
+        let urls = |documents| -> Vec<String> {
+            discover_from(0, false, &http, documents, &rules).into_iter().map(|candidate| candidate.url.to_string()).collect()
+        };
+        let found = urls([Some(&raw), Some(&rendered)]);
+        assert!(found.contains(&"https://maps.example/embed".to_string()) && found.contains(&"https://e.com/widget".to_string()), "{found:?}");
+        assert!(!found.iter().any(|url| url.contains("captcha")), "{found:?}");
+        // Rendered with no HTML read: every iframe counts.
+        assert!(urls([None, Some(&rendered)]).iter().any(|url| url.contains("captcha")));
+    }
+
+    #[test]
+    fn a_link_with_a_login_is_the_sites_own_page() {
+        let targets = LinkTargets::new(&CrawlConfig::new(Url::parse("https://e.com/").unwrap())).unwrap();
+        assert_eq!(targets.target("https://mailto:info@e.com/services/#x").as_deref(), Some("https://e.com/services/"));
+        assert_eq!(targets.target("mailto:info@e.com"), None);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

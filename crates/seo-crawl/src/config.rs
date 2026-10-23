@@ -135,6 +135,23 @@ impl CrawlConfig {
                 changed.push("http.headers Accept-Language: from render.locale");
             }
         }
+        // A start URL with a login (`https://user:pass@staging/`) logs in
+        // with it: the site's Authorization header, and URLs without it
+        // (links that carry credentials are read without them).
+        for start in &mut self.start_urls {
+            if start.username().is_empty() && start.password().is_none() {
+                continue;
+            }
+            if !self.http.headers.keys().any(|name| name.eq_ignore_ascii_case("authorization")) {
+                let decoded = |part: &str| percent_encoding::percent_decode_str(part).decode_utf8_lossy().into_owned();
+                let pair = format!("{}:{}", decoded(start.username()), decoded(start.password().unwrap_or("")));
+                let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, pair);
+                self.http.headers.insert("Authorization".into(), format!("Basic {encoded}"));
+                changed.push("http.headers Authorization: from the start URL's login");
+            }
+            let _ = start.set_username("");
+            let _ = start.set_password(None);
+        }
         if self.follow_links {
             match self.fetch {
                 FetchLevel::Full if !self.extract.links => {
@@ -522,6 +539,19 @@ mod tests {
         given.http.headers.insert("accept-language".into(), "de".into());
         given.resolve();
         assert_eq!(given.http.headers.len(), 1);
+    }
+
+    #[test]
+    fn a_start_url_login_becomes_the_sites_authorization() {
+        let mut config = CrawlConfig::new(Url::parse("https://user:p%40ss@staging.example/").unwrap());
+        config.resolve();
+        assert_eq!(config.start_urls[0].as_str(), "https://staging.example/");
+        // base64("user:p@ss")
+        assert_eq!(config.http.headers.get("Authorization").map(String::as_str), Some("Basic dXNlcjpwQHNz"));
+        let mut given = CrawlConfig::new(Url::parse("https://user:pass@staging.example/").unwrap());
+        given.http.headers.insert("authorization".into(), "Bearer t".into());
+        given.resolve();
+        assert_eq!((given.http.headers.len(), given.start_urls[0].username()), (1, ""));
     }
 
     #[test]

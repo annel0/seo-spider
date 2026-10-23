@@ -21,7 +21,7 @@ const CHUNK: usize = 2048;
 pub(crate) fn meaningful(code: &str, extracted: &ExtractOptions) -> bool {
     match code {
         "too_many_links" | "internal_nofollow_links" | "external_follow_links" | "links_to_http" | "dead_end"
-        | "localhost_links" | "nofollow_to_indexable" | "incoming_follow_and_nofollow"
+        | "localhost_links" | "link_with_credentials" | "nofollow_to_indexable" | "incoming_follow_and_nofollow"
         | "internal_link_to_redirect" | "internal_link_to_error" | "orphan_page" | "external_link_redirect"
         | "external_link_broken" | "pagination_link_missing" | "js_links_only_in_rendered" => extracted.links,
         "h1_missing" | "headings_order_invalid" | "h1_duplicate" | "js_h1_only_in_rendered" | "js_h1_changed" => {

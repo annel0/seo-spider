@@ -459,6 +459,13 @@ pub static CATALOG: &[CheckDef] = &[
         "Страница ссылается на localhost или 127.0.0.1: такие ссылки не работают у посетителей.",
     ),
     def(
+        "link_with_credentials",
+        Medium,
+        "links",
+        "Ссылки с логином в адресе",
+        "В адресе ссылки логин или пароль (https://имя@сайт/): чаще всего это испорченная mailto-ссылка. Посетитель попадёт не туда или увидит запрос пароля; обход читает такую ссылку без логина.",
+    ),
+    def(
         "external_link_redirect",
         Low,
         "links",
@@ -846,7 +853,7 @@ mod tests {
             ("images", 5),
             ("indexability", 7),
             ("javascript", 16),
-            ("links", 15),
+            ("links", 16),
             ("meta_description", 5),
             ("mobile", 1),
             ("page_titles", 5),
@@ -856,7 +863,7 @@ mod tests {
             ("url", 3),
         ];
         assert_eq!(per_category.into_iter().collect::<Vec<_>>(), expected);
-        assert_eq!(CATALOG.len(), 106);
+        assert_eq!(CATALOG.len(), 107);
     }
 
     #[test]

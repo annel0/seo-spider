@@ -5476,9 +5476,11 @@ name = "seo-crawl"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "encoding_rs",
  "flate2",
  "futures-util",
+ "percent-encoding",
  "rayon",
  "regex",
  "reqwest 0.12.28",
