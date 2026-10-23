@@ -32,7 +32,7 @@ extern "C" {
 const MI_OPTION_PURGE_DELAY: std::ffi::c_int = 15;
 
 #[derive(Parser)]
-#[command(version, about = "SEO crawler with an embedded JavaScript renderer")]
+#[command(name = "seo-spider", version, about = "SEO crawler with an embedded JavaScript renderer")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
