@@ -334,6 +334,17 @@ export const api = {
   presets: () => call<Preset[]>("/api/presets"),
   presetConfig: (name: string) => call<Json>(`/api/presets/${name}/config`),
   configSchema: () => call<Schema>("/api/config/schema"),
+  /// A TOML file read over the preset, as changes for the form.
+  importConfig: (preset: string, toml: string) =>
+    call<{ patch: JsonObject }>("/api/config/import", { method: "POST", body: JSON.stringify({ preset, toml }) }),
+  /// The settings as a TOML file for `seo-spider crawl --config`.
+  exportConfig: async (preset: string, config: JsonObject) => {
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (token) headers.authorization = `Bearer ${token}`;
+    const response = await fetch("/api/config/toml", { method: "POST", headers, body: JSON.stringify({ preset, config }) });
+    if (!response.ok) throw new ApiError((await response.json().catch(() => null))?.error ?? response.statusText);
+    return response.blob();
+  },
   crawls: () => call<Crawl[]>("/api/crawls"),
   start: (request: StartRequest) =>
     call<{ id: number }>("/api/crawls", { method: "POST", body: JSON.stringify(request) }),

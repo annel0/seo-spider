@@ -94,6 +94,10 @@ pub struct CrawlControl {
 /// How often a crawl with a progress channel reports.
 const REPORT_EVERY: Duration = Duration::from_millis(250);
 
+/// Sitemap URLs the auto mode reads for its sample when the crawl does not
+/// read the sitemaps itself.
+const AUTO_SITEMAP_URLS: usize = 5000;
+
 fn progress_of(summary: &CrawlSummary, queued: usize, in_flight: usize, started: Instant, paused: bool) -> CrawlProgress {
     CrawlProgress {
         crawl_id: summary.crawl_id,
@@ -215,6 +219,27 @@ async fn run(mut config: CrawlConfig, store: Store, control: CrawlControl, resum
         }
         None => None,
     };
+    // The sitemaps' URLs: crawled when the settings say so; the auto mode
+    // samples their sections either way.
+    let sitemap_roots = || {
+        let mut sitemaps = Vec::new();
+        for start in &config.start_urls {
+            let listed = robots.sitemaps(start);
+            if listed.is_empty() {
+                sitemaps.push(format!("{}/sitemap.xml", start.origin().ascii_serialization()));
+            }
+            sitemaps.extend(listed);
+        }
+        sitemaps.sort();
+        sitemaps.dedup();
+        sitemaps
+    };
+    let mut in_sitemap = HashSet::new();
+    if config.use_sitemaps {
+        in_sitemap = robots::sitemap_urls(&client, sitemap_roots(), config.max_urls).await;
+        tracing::info!(urls = in_sitemap.len(), "sitemaps read");
+    }
+
     // The auto mode decides once per crawl, before it; a continued crawl
     // finds the decision in its settings.
     let auto_pages = config
@@ -227,7 +252,9 @@ async fn run(mut config: CrawlConfig, store: Store, control: CrawlControl, resum
             progress.send_replace(CrawlProgress { crawl_id, probing: true, ..CrawlProgress::default() });
         }
         let probed = Instant::now();
-        let decision = auto::probe(&client, pool, &rules, &robots, &config, pages).await;
+        let sampled = if config.use_sitemaps { HashSet::new() } else { robots::sitemap_urls(&client, sitemap_roots(), AUTO_SITEMAP_URLS).await };
+        let sitemap = if config.use_sitemaps { &in_sitemap } else { &sampled };
+        let decision = auto::probe(&client, pool, &rules, &robots, &config, pages, sitemap).await;
         tracing::info!(render = decision.render, reason = %decision.reason, seconds = probed.elapsed().as_secs_f64(), "auto mode");
         if !decision.render {
             config.render = None;
@@ -262,20 +289,7 @@ async fn run(mut config: CrawlConfig, store: Store, control: CrawlControl, resum
         .filter_map(|url| frontier.index.get(url.as_str()).copied())
         .collect();
 
-    let mut in_sitemap = HashSet::new();
     if config.use_sitemaps {
-        let mut sitemaps = Vec::new();
-        for start in &config.start_urls {
-            let listed = robots.sitemaps(start);
-            if listed.is_empty() {
-                sitemaps.push(format!("{}/sitemap.xml", start.origin().ascii_serialization()));
-            }
-            sitemaps.extend(listed);
-        }
-        sitemaps.sort();
-        sitemaps.dedup();
-        in_sitemap = robots::sitemap_urls(&client, sitemaps, config.max_urls).await;
-        tracing::info!(urls = in_sitemap.len(), "sitemaps read");
         for listed in &in_sitemap {
             let Some(url) = Url::parse(listed).ok().and_then(|url| rules.filters.normalize(url)) else { continue };
             if rules.scope.internal(&url) && rules.filters.allows(&url, true) {

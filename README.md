@@ -77,8 +77,10 @@ Settings come in layers: a preset, then a TOML file (`--config`), then flags.
 | `dump` | `js` keeping the raw and rendered documents (`seo-spider bodies` writes them out) |
 
 The `auto` preset decides on rendering before the crawl: it reads the start
-page and a page of each section the start page links to (8 pages in all,
-`render.auto_pages`) both as the server sends them and rendered, and turns
+page and a page of each section the start page links to, in turns with the
+sections only the sitemap lists (8 pages in all, `render.auto_pages`; the
+sitemap is read for this even when the crawl does not follow it), both as
+the server sends them and rendered, and turns
 rendering on only if JavaScript changes their text (a fifth more words),
 links (any internal link no page has in its HTML), title, H1, description,
 canonical or noindex. The decision and the pages behind it are kept with
@@ -309,7 +311,10 @@ limit) are noted. The whole comparison exports as CSV.
 The settings form is built from the config's JSON Schema
 (`GET /api/config/schema`): every field of `CrawlConfig` shows, starting
 from the chosen preset, with what differs marked and a way back. The crawl
-starts with a JSON merge patch over the preset.
+starts with a JSON merge patch over the preset. The settings save as a
+TOML file for `crawl --preset P --config file.toml`, and a TOML file reads
+back into the form over the preset. Each table's columns can be hidden;
+the browser remembers which.
 
 The server listens on localhost only unless given `--token`, which then
 goes with every API request. `npm run dev` serves the UI with hot reload

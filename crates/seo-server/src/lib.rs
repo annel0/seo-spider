@@ -6,6 +6,7 @@
 
 mod assets;
 mod compare;
+mod config_file;
 mod content;
 mod crawls;
 mod links;
@@ -97,6 +98,8 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
         .route("/api/presets", get(presets))
         .route("/api/presets/{name}/config", get(preset_config))
         .route("/api/config/schema", get(config_schema))
+        .route("/api/config/toml", post(config_file::export))
+        .route("/api/config/import", post(config_file::import))
         .route("/api/crawls", get(list_crawls).post(start_crawl))
         .route("/api/crawls/{id}/pause", post(pause_crawl))
         .route("/api/crawls/{id}/resume", post(resume_crawl))

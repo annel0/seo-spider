@@ -12,6 +12,7 @@ import {
   type JsonObject,
   type Schema,
 } from "../settings";
+import { api } from "../api";
 import { formatBytes } from "../labels";
 import { Icon } from "./Icon";
 
@@ -51,6 +52,7 @@ export function Settings({
   base,
   value,
   patch,
+  preset,
   presetTitle,
   renderDefaults,
   onPatch,
@@ -60,6 +62,8 @@ export function Settings({
   base: Json;
   value: Json;
   patch: JsonObject;
+  /// The preset's name, for the TOML file.
+  preset: string;
   presetTitle: string;
   renderDefaults: Json;
   onPatch: (patch: JsonObject) => void;
@@ -69,6 +73,31 @@ export function Settings({
   const render = useMemo(() => renderFields(schema), [schema]);
   const [current, setCurrent] = useState(sections[0].key);
   const body = useRef<HTMLDivElement>(null);
+  const [fileError, setFileError] = useState<string | null>(null);
+
+  const readFile = (file: File | undefined) => {
+    if (!file) return;
+    setFileError(null);
+    file
+      .text()
+      .then((text) => api.importConfig(preset, text))
+      .then((imported) => onPatch(imported.patch))
+      .catch((failure: Error) => setFileError(failure.message));
+  };
+
+  const writeFile = () => {
+    setFileError(null);
+    api
+      .exportConfig(preset, patch)
+      .then((blob) => {
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = `seo-spider-${preset}.toml`;
+        link.click();
+        URL.revokeObjectURL(link.href);
+      })
+      .catch((failure: Error) => setFileError(failure.message));
+  };
   // Named paths in the section's order, the rest in the schema's.
   const grouped = [...sections, { key: "other", title: "Прочее", paths: [] as string[] }]
     .map((section) => {
@@ -101,6 +130,14 @@ export function Settings({
           <span style={{ color: "var(--ink-3)" }}>от пресета {presetTitle}</span>
           {changed > 0 && <span className="badge">изменено {changed}</span>}
           <span style={{ flex: 1 }} />
+          {fileError && <span style={{ color: "var(--bad)" }}>{fileError}</span>}
+          <label className="button" title="Настройки из TOML-файла поверх пресета, как seo-spider crawl --config">
+            <Icon name="upload" /> Из TOML
+            <input type="file" accept=".toml,text/plain" hidden onChange={(event) => readFile(event.target.files?.[0])} />
+          </label>
+          <button onClick={writeFile} title="Эти настройки файлом для seo-spider crawl --config">
+            <Icon name="download" /> TOML
+          </button>
           <button onClick={() => onPatch({})} disabled={changed === 0}>
             Вернуть как в пресете
           </button>

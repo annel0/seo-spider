@@ -1,8 +1,9 @@
 //! The auto mode: whether a site needs its JavaScript run to be crawled as
 //! a search engine renders it. Before the crawl, the start page and a page
-//! of each section it links to are read twice, as the server sends them and
-//! rendered, and compared on what an SEO crawl reads: text, links, title,
-//! H1, description, canonical, robots. If JavaScript changes any of it on
+//! of each section it links to (and of the sections only the sitemap
+//! lists) are read twice, as the server sends them and rendered, and
+//! compared on what an SEO crawl reads: text, links, title, H1,
+//! description, canonical, robots. If JavaScript changes any of it on
 //! any of them, every page is rendered; if not, the crawl reads the HTML
 //! only, several times faster.
 
@@ -58,7 +59,8 @@ const FILES: &[&str] = &[
 ];
 
 /// Decides on the first start URL and up to `pages - 1` pages of other
-/// sections, read in parallel as the crawl's settings read pages.
+/// sections (from its links and the `sitemap`'s URLs), read in parallel as
+/// the crawl's settings read pages.
 pub(crate) async fn probe(
     client: &Client,
     pool: &RenderPool,
@@ -66,6 +68,7 @@ pub(crate) async fn probe(
     robots: &Robots,
     config: &CrawlConfig,
     pages: usize,
+    sitemap: &HashSet<String>,
 ) -> RenderDecision {
     let (start, extract, max_body) = (&config.start_urls[0], config.extract, config.http.max_body);
     let first = read(client, pool, start.clone(), extract, max_body).await;
@@ -77,7 +80,7 @@ pub(crate) async fn probe(
         (Ok(raw), _) => raw,
         _ => return decide(vec![sample(&first, &HashSet::new(), rules)]),
     };
-    let others = pick(start, links, rules, robots, pages.saturating_sub(1));
+    let others = pick(start, links, sitemap, rules, robots, pages.saturating_sub(1));
     let mut reading: FuturesUnordered<_> = others.into_iter().map(|url| read(client, pool, url, extract, max_body)).collect();
     let mut reads = vec![first];
     while let Some(next) = reading.next().await {
@@ -130,10 +133,35 @@ fn normalized(href: &str, rules: &Rules) -> Option<String> {
 /// A page of each section the start page links to, in the order it links
 /// to them, preferring one a level deeper (a product rather than its
 /// catalogue: the template that repeats most).
-fn pick(start: &Url, facts: &PageFacts, rules: &Rules, robots: &Robots, count: usize) -> Vec<Url> {
+/// A page of each section the start page links to, and of each section
+/// only the sitemap lists, taken in turns; deeper pages first (a section's
+/// own page is often a list, its pages are what it is about).
+fn pick(start: &Url, facts: &PageFacts, sitemap: &HashSet<String>, rules: &Rules, robots: &Robots, count: usize) -> Vec<Url> {
+    let linked = sections(start, facts.links.iter().map(|link| link.href.as_str()), rules, robots);
+    let mut listed: Vec<&str> = sitemap.iter().map(String::as_str).collect();
+    listed.sort_unstable();
+    let mut unlinked = sections(start, listed.into_iter(), rules, robots);
+    // Pages at the root (a blog's posts, often) are each a section of their
+    // own: the sitemap gives sections that have pages under them.
+    unlinked.retain(|(section, _, deep)| *deep && !linked.iter().any(|(have, ..)| have == section));
+    let (mut linked, mut unlinked) = (linked.into_iter(), unlinked.into_iter());
+    let mut picked = Vec::new();
+    while picked.len() < count {
+        let (one, other) = (linked.next(), unlinked.next());
+        if one.is_none() && other.is_none() {
+            break;
+        }
+        picked.extend(one.into_iter().chain(other).map(|(_, url, _)| url));
+    }
+    picked.truncate(count);
+    picked
+}
+
+/// The sections of `addresses` by first path segment, a page each.
+fn sections<'a>(start: &Url, addresses: impl Iterator<Item = &'a str>, rules: &Rules, robots: &Robots) -> Vec<(String, Url, bool)> {
     let mut sections: Vec<(String, Url, bool)> = Vec::new();
-    for link in &facts.links {
-        let Some(url) = Url::parse(&link.href).ok().and_then(|url| rules.filters.normalize(url)) else { continue };
+    for address in addresses {
+        let Some(url) = Url::parse(address).ok().and_then(|url| rules.filters.normalize(url)) else { continue };
         let path = url.path().to_ascii_lowercase();
         if url == *start
             || !rules.scope.internal(&url)
@@ -152,7 +180,7 @@ fn pick(start: &Url, facts: &PageFacts, rules: &Rules, robots: &Robots, count: u
             None => sections.push((section, url, deep)),
         }
     }
-    sections.into_iter().take(count).map(|(_, url, _)| url).collect()
+    sections
 }
 
 fn sample(read: &Read, linked: &HashSet<String>, rules: &Rules) -> Sample {
@@ -339,9 +367,18 @@ mod tests {
             Source::Raw,
         );
         let start = Url::parse("https://shop.example/").unwrap();
-        let picked: Vec<String> = pick(&start, &home, &rules, &robots, 7).iter().map(|url| url.path().to_string()).collect();
+        let none = HashSet::new();
+        let picked: Vec<String> = pick(&start, &home, &none, &rules, &robots, 7).iter().map(|url| url.path().to_string()).collect();
         assert_eq!(picked, ["/catalog/kettles/steel", "/blog/post", "/about"]);
-        assert_eq!(pick(&start, &home, &rules, &robots, 1).len(), 1);
+        assert_eq!(pick(&start, &home, &none, &rules, &robots, 1).len(), 1);
+        // Sections only the sitemap lists come in turns with the linked ones.
+        let sitemap: HashSet<String> = ["/catalog/kettles/x", "/brands/acme", "/brands/", "/news/2026/a", "/other.pdf", "/a-post"]
+            .iter()
+            .map(|path| format!("https://shop.example{path}"))
+            .collect();
+        let picked: Vec<String> = pick(&start, &home, &sitemap, &rules, &robots, 7).iter().map(|url| url.path().to_string()).collect();
+        assert_eq!(picked, ["/catalog/kettles/steel", "/brands/acme", "/blog/post", "/news/2026/a", "/about"]);
+        assert_eq!(pick(&start, &home, &sitemap, &rules, &robots, 2).len(), 2);
         assert_eq!(plural(21, ["ссылка", "ссылки", "ссылок"]), "ссылка");
         assert_eq!(plural(12, ["ссылка", "ссылки", "ссылок"]), "ссылок");
     }

@@ -69,7 +69,8 @@ function draw(kind: CellKind, value: CellValue, color: (name: string) => string,
 export function TabGrid({
   crawlId,
   tab,
-  columns,
+  columns: all,
+  hidden,
   origin,
   query,
   live,
@@ -80,6 +81,8 @@ export function TabGrid({
   crawlId: number;
   tab: string;
   columns: TabColumn[];
+  /// Keys of the columns not shown.
+  hidden: string[];
   origin: string;
   query: RowsQuery;
   live: boolean;
@@ -88,6 +91,11 @@ export function TabGrid({
   onTotal: (total: number) => void;
 }) {
   const { dark, color } = useColors();
+  // The shown columns with where their cells are in a row.
+  const columns = useMemo(
+    () => all.map((column, at) => ({ ...column, at })).filter((column) => column.key === "url" || !hidden.includes(column.key)),
+    [all, hidden],
+  );
   const [widths, setWidths] = useState<Record<string, number>>({});
   const cache = useRef(new Map<number, Row[]>());
   const pending = useRef(new Set<number>());
@@ -151,7 +159,7 @@ export function TabGrid({
     ([col, row]: Item): GridCell => {
       const found = cache.current.get(Math.floor(row / PAGE))?.[row % PAGE];
       if (!found) return { kind: GridCellKind.Loading, allowOverlay: false };
-      return draw(columns[col].kind, found.cells[col] ?? null, color, path);
+      return draw(columns[col].kind, found.cells[columns[col].at] ?? null, color, path);
     },
     // `tick` redraws the cells as pages arrive.
     [columns, tick, dark, path],

@@ -11,6 +11,7 @@ import {
   type TabDef,
 } from "./api";
 import { BrokenLinks } from "./components/BrokenLinks";
+import { ColumnPicker, hiddenColumns, keepHiddenColumns } from "./components/ColumnPicker";
 import { CompareView, comparable } from "./components/CompareView";
 import { DetailPanel } from "./components/DetailPanel";
 import { Icon } from "./components/Icon";
@@ -37,6 +38,8 @@ export function App() {
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<Sort>(BY_URL);
   const [selected, setSelected] = useState<number | null>(null);
+  // Per tab, the columns hidden, as this browser keeps them.
+  const [hidden, setHidden] = useState<Record<string, string[]>>({});
   const [tabs, setTabs] = useState<TabDef[]>([]);
   const [issues, setIssues] = useState<IssueCount[]>([]);
   // Broken links of the crawl; null until its link graph exists.
@@ -245,6 +248,7 @@ export function App() {
           base={base}
           value={settings}
           patch={patch}
+          preset={preset}
           presetTitle={presets.find((item) => item.name === preset)?.title ?? preset}
           renderDefaults={renderDefaults}
           onPatch={setPatch}
@@ -323,6 +327,14 @@ export function App() {
                   aria-label="Поиск по адресу"
                   style={{ width: 220 }}
                 />
+                <ColumnPicker
+                  columns={tab.columns}
+                  hidden={hidden[tab.key] ?? hiddenColumns(tab.key)}
+                  onChange={(next) => {
+                    keepHiddenColumns(tab.key, next);
+                    setHidden((current) => ({ ...current, [tab.key]: next }));
+                  }}
+                />
                 <a className="button" href={downloads.csv(crawlId, tab.key, query)} download title="Строки этой таблицы с фильтром, поиском и сортировкой">
                   <Icon name="download" /> CSV
                 </a>
@@ -333,6 +345,7 @@ export function App() {
                   crawlId={crawlId}
                   tab={tab.key}
                   columns={tab.columns}
+                  hidden={hidden[tab.key] ?? hiddenColumns(tab.key)}
                   origin={origin}
                   query={query}
                   live={live}

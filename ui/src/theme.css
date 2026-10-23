@@ -117,7 +117,8 @@ button.primary:hover {
   filter: brightness(1.1);
 }
 
-a.button {
+a.button,
+label.button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -131,7 +132,8 @@ a.button {
   font-weight: 500;
 }
 
-a.button:hover {
+a.button:hover,
+label.button:hover {
   background: var(--panel-2);
 }
 
@@ -1697,4 +1699,51 @@ button.template-toggle.on {
     border-left: 0;
     border-top: 1px solid var(--rule);
   }
+}
+
+label.button {
+  cursor: pointer;
+}
+
+/* The tab's column picker: a list of checkboxes under its button. */
+.column-picker {
+  position: relative;
+}
+
+.column-menu {
+  position: absolute;
+  top: 36px;
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 220px;
+  max-height: 60vh;
+  overflow: auto;
+  padding: 6px 0;
+  background: var(--panel);
+  border: 1px solid var(--rule-strong);
+}
+
+.column-menu label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.column-menu label:hover {
+  background: var(--panel-2);
+}
+
+.column-menu input {
+  height: auto;
+}
+
+.column-menu > button {
+  align-self: flex-start;
+  margin: 4px 8px 0;
+  color: var(--accent);
 }
