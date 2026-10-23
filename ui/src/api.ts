@@ -202,6 +202,21 @@ export type Outlink = {
   status: number | null;
 };
 
+export type TextBlock = { tag: string; text: string };
+
+/// One document of a page: its HTML (cut at 2 MB) and visible text.
+export type PageDocument = { html: string; cut: boolean; blocks: TextBlock[] };
+
+/// A page's documents: the crawl's (`kept`), or fetched and rendered now
+/// (`live`); neither when the crawl kept none and none was asked for.
+export type PageContent = {
+  kept: boolean;
+  live: boolean;
+  raw: PageDocument | null;
+  rendered: PageDocument | null;
+  error: string | null;
+};
+
 export type StartRequest = {
   start_url: string;
   preset: string;
@@ -261,6 +276,7 @@ export const api = {
   url: (id: number) => call<UrlDetail>(`/api/urls/${id}`),
   inlinks: (id: number, offset = 0, limit = 100) => call<LinkPage>(`/api/urls/${id}/inlinks?offset=${offset}&limit=${limit}`),
   outlinks: (id: number) => call<Outlink[]>(`/api/urls/${id}/outlinks`),
+  content: (id: number, live = false) => call<PageContent>(`/api/urls/${id}/content${live ? "?live=true" : ""}`),
   brokenLinks: (id: number, offset = 0, limit = 200) =>
     call<LinkPage>(`/api/crawls/${id}/broken-links?offset=${offset}&limit=${limit}`),
   // EventSource sends no headers: the token goes in the address.

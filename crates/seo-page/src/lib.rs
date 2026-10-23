@@ -8,11 +8,13 @@ mod extract;
 mod microdata;
 mod similarity;
 mod stream;
+mod text;
 
 pub use custom::{CustomFacts, CustomRules, ExtractorSpec, Output, SearchScope, SearchSpec};
 pub use extract::{extract, extract_tree, extract_with};
 pub use similarity::{similarity, SIGNATURE};
 pub use stream::extract_stream;
+pub use text::{text_blocks, TextBlock};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

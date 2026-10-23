@@ -5,6 +5,7 @@
 //! that file read-only next to the crawl writing it.
 
 mod assets;
+mod content;
 mod crawls;
 mod links;
 mod tabs;
@@ -54,6 +55,11 @@ struct AppState {
     /// One link graph is built at a time, once per crawl (see `links`).
     graphs: Mutex<()>,
     graphed: Mutex<std::collections::HashSet<i64>>,
+    /// Render pages for the detail panel, made on first use: one for
+    /// crawls of public sites, one (that may reach private addresses) for
+    /// crawls that start at a private one. A public page's scripts never
+    /// run where they could reach the local network.
+    view_pools: [tokio::sync::OnceCell<seo_crawl::RenderPool>; 2],
 }
 
 /// Read connections kept open at most.
@@ -73,6 +79,7 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
             readers: std::sync::Mutex::new(Vec::new()),
             graphs: Mutex::new(()),
             graphed: Mutex::new(Default::default()),
+            view_pools: [tokio::sync::OnceCell::new(), tokio::sync::OnceCell::new()],
         });
     let mut api = Router::new()
         .route("/api/presets", get(presets))
@@ -92,6 +99,7 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
         .route("/api/urls/{id}", get(url_detail))
         .route("/api/urls/{id}/inlinks", get(links::inlinks))
         .route("/api/urls/{id}/outlinks", get(links::outlinks))
+        .route("/api/urls/{id}/content", get(content::content))
         .route("/api/crawls/{id}/broken-links", get(links::broken_links))
         .route("/api/crawls/{id}/broken-links.csv", get(links::broken_links_csv))
         .route("/api/crawls/{id}/export.xlsx", get(export_xlsx))

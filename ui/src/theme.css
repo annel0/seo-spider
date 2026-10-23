@@ -1082,6 +1082,99 @@ button.link:hover {
   white-space: nowrap;
 }
 
+/* A page's content: its text in blocks, what JavaScript added marked. */
+
+.content-empty {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 12px;
+  color: var(--ink-2);
+}
+
+.content-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  box-shadow: 0 1px 0 var(--rule);
+}
+
+.content-bar .note,
+.page-content .note {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.text-blocks {
+  padding: 6px 0;
+  max-width: 900px;
+}
+
+.text-block {
+  padding: 3px 12px 3px 14px;
+  border-left: 3px solid transparent;
+  line-height: 1.5;
+}
+
+.text-block.tag-h1 {
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.text-block.tag-h2 {
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.text-block.tag-h3,
+.text-block.tag-h4 {
+  font-weight: 600;
+}
+
+.text-block.tag-li::before {
+  content: "– ";
+  color: var(--ink-3);
+}
+
+.text-block.added {
+  border-left-color: var(--accent);
+  background: var(--accent-wash);
+}
+
+.text-block.changed {
+  border-left-color: var(--accent);
+}
+
+.text-block .fresh {
+  background: var(--accent-wash);
+  color: var(--accent);
+}
+
+.text-block.removed {
+  color: var(--ink-3);
+  text-decoration: line-through;
+  border-left-color: var(--warn);
+}
+
+.text-removed-title {
+  padding: 14px 14px 4px;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.html-source {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--ink-2);
+}
+
 /* Broken links: each broken target, then the pages it sits on. */
 
 .broken-target {

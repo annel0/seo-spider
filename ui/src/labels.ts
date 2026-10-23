@@ -101,6 +101,15 @@ export const readableUrl = (url: string) => {
   }
 };
 
+/// The Russian form for a count: plural(5, ["блок", "блока", "блоков"]).
+export const plural = (count: number, [one, few, many]: [string, string, string]) => {
+  const tens = count % 100;
+  const units = count % 10;
+  if (units === 1 && tens !== 11) return one;
+  if (units >= 2 && units <= 4 && (tens < 12 || tens > 14)) return few;
+  return many;
+};
+
 export const formatCount = (value: number) => new Intl.NumberFormat("ru-RU").format(Math.round(value));
 
 export const formatBytes = (bytes: number) => {

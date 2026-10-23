@@ -2,8 +2,9 @@ import { useEffect, useState } from "react";
 import { api, type LinkPage, type Outlink, type UrlDetail } from "../api";
 import { formatBytes, formatCount, readableUrl, severityColor, severityLabels, statusClass, statusColor } from "../labels";
 import { Icon } from "./Icon";
+import { PageContent } from "./PageContent";
 
-type Tab = "summary" | "issues" | "in" | "out" | "headers" | "custom";
+type Tab = "summary" | "issues" | "in" | "out" | "content" | "headers" | "custom";
 
 /// The selected URL: the status as a block, a strip of facts, then tabs.
 /// A page in its links opens here in turn.
@@ -108,6 +109,7 @@ export function DetailPanel({ urlId, onOpen }: { urlId: number; onOpen?: (urlId:
         <TabButton tab="issues" current={tab} onSelect={setTab} label={`Проблемы ${detail.issues.length}`} />
         <TabButton tab="in" current={tab} onSelect={setTab} label={`Входящие ${inlinks?.ready ? formatCount(inlinks.total) : "…"}`} />
         {facts && <TabButton tab="out" current={tab} onSelect={setTab} label={`Исходящие ${formatCount(facts.links)}`} />}
+        {facts && <TabButton tab="content" current={tab} onSelect={setTab} label="Содержимое" />}
         <TabButton tab="headers" current={tab} onSelect={setTab} label="Заголовки ответа" />
         {hasCustom && <TabButton tab="custom" current={tab} onSelect={setTab} label="Своё извлечение" />}
       </div>
@@ -196,6 +198,7 @@ export function DetailPanel({ urlId, onOpen }: { urlId: number; onOpen?: (urlId:
             ))}
           </div>
         ))}
+      {tab === "content" && <PageContent urlId={urlId} />}
       {tab === "headers" && (
         <div className="kv">
           {detail.headers.map(([name, value], at) => (

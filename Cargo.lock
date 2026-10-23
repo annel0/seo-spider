@@ -3970,6 +3970,7 @@ dependencies = [
 name = "seo-page"
 version = "0.1.0"
 dependencies = [
+ "ego-tree",
  "htmlize",
  "lol_html",
  "regex",
@@ -4021,6 +4022,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "url",
+ "zstd",
 ]
 
 [[package]]

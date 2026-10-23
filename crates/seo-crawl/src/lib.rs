@@ -23,7 +23,7 @@ use anyhow::{bail, Context, Result};
 use regex::RegexSet;
 use rustc_hash::{FxHashMap, FxHashSet};
 use seo_page::{HttpInfo, PageFacts, Source};
-use seo_render::{RenderPool, Rendered};
+use seo_render::Rendered;
 use seo_store::{encode_facts, BodyKind, RenderRecord, Store, Write};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
@@ -33,7 +33,7 @@ pub use audit::run_checks;
 pub use auto::{RenderDecision, Sample};
 pub use config::{is_private_host, CrawlConfig, FetchLevel, HttpConfig, RenderSettings, StoreOptions};
 pub use seo_page::ExtractOptions;
-pub use seo_render::{RenderConfig, SettlePolicy};
+pub use seo_render::{Document as RenderDocument, RenderConfig, RenderPool, SettlePolicy};
 
 #[derive(Debug, Clone)]
 pub struct CrawlSummary {
@@ -1211,6 +1211,51 @@ fn discover_from(
         }
     }
     candidates
+}
+
+/// Fetches a page now, whole, as the crawl with `config` would: for a view
+/// of a page whose documents the crawl did not keep. The response, and its
+/// HTML when it is a document, also as the renderer takes it, so that the
+/// page is rendered from the very document read (a second request can
+/// differ: counters, dates).
+pub async fn fetch_now(config: &CrawlConfig, url: &Url) -> Result<(HttpInfo, Option<(String, RenderDocument)>)> {
+    let client = fetch::client(&fetch::ClientOptions {
+        user_agent: &config.http.user_agent,
+        timeout: config.http.timeout(),
+        connect_timeout: config.http.connect_timeout(),
+        concurrency: 1,
+        headers: &config.http.headers,
+        cookies: config.http.cookies,
+        http2: config.http.http2,
+        ca_certs: &config.http.ca_certs,
+        accept_invalid_certs: config.http.accept_invalid_certs,
+    })?;
+    let fetched = fetch::fetch(&client, url, fetch::BodyMode::Full(config.http.max_body), None, false).await;
+    let http = fetched.http;
+    let document = fetched.body.map(|body| {
+        let headers = http
+            .headers
+            .iter()
+            .filter(|(name, _)| !name.eq_ignore_ascii_case("content-encoding") && !name.eq_ignore_ascii_case("content-length"))
+            .cloned()
+            .collect();
+        (body.html, RenderDocument { status: http.status, headers, body: body.bytes })
+    });
+    Ok((http, document))
+}
+
+/// A render pool of one thread for views, with the crawl's certificates and
+/// headers; private addresses allowed when the crawl's start is one.
+pub fn view_render_pool(config: &CrawlConfig) -> Result<RenderPool> {
+    let settings = config.render.clone().unwrap_or_default();
+    let mut render = settings.to_render_config();
+    render.threads = 1;
+    render.reuse_documents = true;
+    render.ca_certs = ca_bundle(&config.http.ca_certs)?;
+    render.accept_invalid_certs = config.http.accept_invalid_certs;
+    render.allow_private_network |= config.start_urls.iter().any(is_private_host);
+    (render.cookies, render.headers) = render_headers(&config.http.headers, &config.start_urls);
+    Ok(RenderPool::new(render))
 }
 
 /// How the crawler turns a link into the URL it queues: resolved, no
