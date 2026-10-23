@@ -97,6 +97,7 @@ export function PageContent({ urlId }: { urlId: number }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<View>("text");
+  const [withTemplate, setWithTemplate] = useState(false);
 
   useEffect(() => {
     setContent(null);
@@ -121,9 +122,11 @@ export function PageContent({ urlId }: { urlId: number }) {
       .finally(() => setLoading(false));
   };
 
+  // The site's template is left out unless asked for, from the comparison too.
+  const own = (blocks: TextBlock[]) => (withTemplate ? blocks : blocks.filter((block) => !block.template));
   const diff = useMemo(
-    () => (content?.raw && content.rendered ? compare(content.raw.blocks, content.rendered.blocks) : null),
-    [content],
+    () => (content?.raw && content.rendered ? compare(own(content.raw.blocks), own(content.rendered.blocks)) : null),
+    [content, withTemplate],
   );
 
   if (error) return <div className="kv"><div>Содержимое</div><div style={{ color: "var(--bad)" }}>{error}</div></div>;
@@ -146,6 +149,7 @@ export function PageContent({ urlId }: { urlId: number }) {
   const html = view === "raw" ? content.raw : view === "rendered" ? content.rendered : null;
   const changed = diff?.marked.filter((item) => item.added || item.fresh?.some(Boolean)) ?? [];
   const wordsAdded = diff ? newWords(diff.marked) : 0;
+  const templateBlocks = shown!.blocks.filter((block) => block.template).length;
 
   return (
     <div className="page-content">
@@ -180,6 +184,18 @@ export function PageContent({ urlId }: { urlId: number }) {
           </>
         )}
         <span style={{ flex: 1 }} />
+        {view === "text" && content.templated && templateBlocks > 0 && (
+          <button
+            className={`template-toggle ${withTemplate ? "on" : ""}`}
+            onClick={() => setWithTemplate((shown) => !shown)}
+            title="Блоки, которые обход встретил на многих страницах сайта: меню, шапка, подвал"
+          >
+            {withTemplate
+              ? "Скрыть шаблон сайта"
+              : `Шаблон сайта скрыт: ${formatCount(templateBlocks)} ${plural(templateBlocks, ["блок", "блока", "блоков"])}`}
+          </button>
+        )}
+        {view === "text" && !content.templated && <span className="note">шаблон сайта находят обходы новее этого</span>}
         {content.live && <span className="note">загружено сейчас, может отличаться от обхода</span>}
         {content.live && (
           <button className="ghost" onClick={fetchNow}>
@@ -195,11 +211,19 @@ export function PageContent({ urlId }: { urlId: number }) {
         </pre>
       ) : (
         <div className="text-blocks">
-          {(diff ? diff.marked : shown!.blocks.map((block): Marked => ({ block, added: false }))).map(({ block, added: isNew, fresh }, at) => (
+          {(diff ? diff.marked : own(shown!.blocks).map((block): Marked => ({ block, added: false }))).map(({ block, added: isNew, fresh }, at) => (
             <div
               key={at}
-              className={`text-block tag-${block.tag} ${isNew ? "added" : fresh?.some(Boolean) ? "changed" : ""}`}
-              title={isNew ? "Только после JavaScript" : fresh?.some(Boolean) ? "JavaScript дописал выделенное" : undefined}
+              className={`text-block tag-${block.tag} ${isNew ? "added" : fresh?.some(Boolean) ? "changed" : ""} ${block.template ? "template" : ""}`}
+              title={
+                isNew
+                  ? "Только после JavaScript"
+                  : fresh?.some(Boolean)
+                    ? "JavaScript дописал выделенное"
+                    : block.template
+                      ? `Шаблон сайта: на ${formatCount(block.template)} ${plural(block.template, ["странице", "страницах", "страницах"])}`
+                      : undefined
+              }
             >
               {fresh
                 ? split(block.text).map((word, index) => (

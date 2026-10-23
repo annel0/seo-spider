@@ -115,6 +115,14 @@ CREATE TABLE IF NOT EXISTS inlinks (
     data BLOB NOT NULL
 );
 CREATE INDEX IF NOT EXISTS inlinks_to ON inlinks (crawl_id, to_id);
+-- The site's template: text blocks met on many of the crawl's pages, by
+-- block hash (seo_page::block_hash), with how many pages had each.
+CREATE TABLE IF NOT EXISTS template_blocks (
+    crawl_id INTEGER NOT NULL,
+    hash INTEGER NOT NULL,
+    pages INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS template_blocks_crawl ON template_blocks (crawl_id);
 "#;
 
 pub const POSTGRES: &str = r#"
@@ -201,6 +209,12 @@ CREATE TABLE IF NOT EXISTS inlinks (
     data BYTEA NOT NULL
 );
 CREATE INDEX IF NOT EXISTS inlinks_to ON inlinks (crawl_id, to_id);
+CREATE TABLE IF NOT EXISTS template_blocks (
+    crawl_id BIGINT NOT NULL,
+    hash BIGINT NOT NULL,
+    pages BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS template_blocks_crawl ON template_blocks (crawl_id);
 -- Facts and bodies are zstd already: storing them as they are saves
 -- PostgreSQL compressing them again for nothing. Only once: the change
 -- locks the table against readers.
@@ -297,6 +311,12 @@ CREATE TABLE IF NOT EXISTS inlinks (
     sources BIGINT NOT NULL,
     data LONGBLOB NOT NULL,
     KEY inlinks_to (crawl_id, to_id)
+) ENGINE = InnoDB;
+CREATE TABLE IF NOT EXISTS template_blocks (
+    crawl_id BIGINT NOT NULL,
+    hash BIGINT NOT NULL,
+    pages BIGINT NOT NULL,
+    KEY template_blocks_crawl (crawl_id)
 ) ENGINE = InnoDB
 "#;
 
@@ -417,6 +437,11 @@ pub const ISSUES: Columns<'static> = Columns {
 pub const INLINKS: Columns<'static> = Columns {
     table: "inlinks",
     columns: &[("crawl_id", Kind::Int), ("to_id", Kind::Int), ("sources", Kind::Int), ("data", Kind::Blob)],
+};
+
+pub const TEMPLATE_BLOCKS: Columns<'static> = Columns {
+    table: "template_blocks",
+    columns: &[("crawl_id", Kind::Int), ("hash", Kind::Int), ("pages", Kind::Int)],
 };
 
 /// What the end of a crawl settles per URL; `id` finds the row.

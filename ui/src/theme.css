@@ -1485,3 +1485,25 @@ button.link:hover {
 .compare-notes svg {
   color: var(--warn);
 }
+
+/* The site's template among a page's text: shown only when asked for,
+   quieter than the page's own. */
+.text-block.template {
+  color: var(--ink-3);
+  border-left-color: var(--rule-strong);
+}
+
+button.template-toggle {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px dashed var(--rule-strong);
+  background: transparent;
+  color: var(--ink-2);
+  font-weight: 500;
+}
+
+button.template-toggle.on {
+  border-style: solid;
+  background: var(--panel-3);
+  color: var(--ink);
+}

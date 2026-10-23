@@ -3,6 +3,7 @@
 //! pages); ancestry that `extract` reads from the tree — in `<head>`, inside
 //! a link, under a `<nav>` — is tracked here from start and end tags.
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 
 use lol_html::html_content::{Element, EndTag, TextChunk};
@@ -11,6 +12,7 @@ use rustc_hash::FxHashMap;
 use url::Url;
 use xxhash_rust::xxh3::Xxh3;
 
+use crate::text::{block_tag, BlockReader};
 use crate::{ExtractOptions, Form, Hreflang, Image, Link, LinkPosition, PageFacts, Pagination, Source};
 
 /// A link being read: text arrives between its start and end tags.
@@ -86,6 +88,8 @@ struct State {
     /// once it is whole.
     node_text: String,
     text_hash: Option<Xxh3>,
+    /// The visible text in blocks, when asked for.
+    blocks: Option<crate::text::BlockReader>,
 }
 
 impl State {
@@ -158,6 +162,16 @@ fn landmark(element: &Element) -> Option<LinkPosition> {
     }
 }
 
+/// The element's markup hides it: `hidden`, or an inline style of
+/// `display: none` or `visibility: hidden`.
+fn hidden_by_markup(element: &Element) -> bool {
+    element.has_attribute("hidden")
+        || element.get_attribute("style").is_some_and(|style| {
+            let style: String = style.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_ascii_lowercase();
+            style.contains("display:none") || style.contains("visibility:hidden")
+        })
+}
+
 /// Runs `on_end` when the element's end tag is read; elements without one
 /// (void, or closed implicitly) never call it, which callers allow for.
 fn on_end(element: &mut Element, on_end: impl FnOnce() + 'static) {
@@ -171,9 +185,44 @@ fn on_end(element: &mut Element, on_end: impl FnOnce() + 'static) {
 
 /// `extract_with` in one streaming pass.
 pub fn extract_stream(html: &str, url: &Url, source: Source, options: &ExtractOptions) -> PageFacts {
+    stream(html, url, source, options, None).0
+}
+
+/// `extract_stream`, with the hashes of the distinct text blocks
+/// (`block_hash`) when `options.text` asks for the text.
+pub fn extract_blocks(html: &str, url: &Url, source: Source, options: &ExtractOptions) -> (PageFacts, Vec<u64>) {
+    let (facts, blocks) = stream(html, url, source, options, options.text.then(|| BlockReader::new(false)));
+    (facts, blocks.map(|blocks| blocks.finish().1).unwrap_or_default())
+}
+
+/// The text blocks of `html` (`text_blocks`).
+pub(crate) fn read_blocks(html: &str) -> Vec<crate::TextBlock> {
+    let options = ExtractOptions {
+        links: false,
+        resources: false,
+        headings: false,
+        text: true,
+        structured_data: false,
+        forms: false,
+        dom_stats: false,
+        similarity: false,
+    };
+    let url = Url::parse("http://localhost/").expect("a valid URL");
+    let (_, blocks) = stream(html, &url, Source::Raw, &options, Some(BlockReader::new(true)));
+    blocks.map(|blocks| blocks.finish().0).unwrap_or_default()
+}
+
+fn stream(
+    html: &str,
+    url: &Url,
+    source: Source,
+    options: &ExtractOptions,
+    blocks: Option<BlockReader>,
+) -> (PageFacts, Option<BlockReader>) {
     let opts = *options;
     let state = std::rc::Rc::new(RefCell::new(State {
         minhash: opts.similarity.then(crate::similarity::MinHasher::new),
+        blocks,
         ..State::default()
     }));
     {
@@ -199,6 +248,21 @@ pub fn extract_stream(html: &str, url: &Url, source: Source, options: &ExtractOp
                 {
                     st.body_seen = true;
                     st.head_closed = true;
+                }
+                if let Some(blocks) = st.blocks.as_mut() {
+                    let hidden = el.can_have_content() && hidden_by_markup(el);
+                    if name == "br" {
+                        blocks.line_break();
+                    } else if let Some(tag) = block_tag(&name).map(Cow::Borrowed).or_else(|| hidden.then(|| Cow::Owned(name.clone()))) {
+                        let block = matches!(tag, Cow::Borrowed(_));
+                        blocks.open(tag.clone(), block, hidden);
+                        let s = s.clone();
+                        on_end(el, move || {
+                            if let Some(blocks) = s.borrow_mut().blocks.as_mut() {
+                                blocks.close(&tag, block);
+                            }
+                        });
+                    }
                 }
                 match name.as_str() {
                     "html" | "head" | "body" => {
@@ -506,6 +570,11 @@ pub fn extract_stream(html: &str, url: &Url, source: Source, options: &ExtractOp
                     st.body_seen = true;
                     st.head_closed = true;
                 }
+                if st.visible() && st.svg_depth == 0 {
+                    if let Some(blocks) = st.blocks.as_mut() {
+                        blocks.text(text);
+                    }
+                }
                 if (opts.text || opts.similarity) && st.visible() {
                     for word in text.split_whitespace() {
                         st.word(word);
@@ -526,6 +595,7 @@ pub fn extract_stream(html: &str, url: &Url, source: Source, options: &ExtractOp
         let _ = rewriter.end();
     }
     let mut st = std::rc::Rc::try_unwrap(state).ok().expect("handlers dropped").into_inner();
+    let blocks = st.blocks.take();
     st.close_link();
     if let Some((level, text)) = st.heading.take() {
         st.headings.push((level, collapse(&text)));
@@ -544,7 +614,7 @@ pub fn extract_stream(html: &str, url: &Url, source: Source, options: &ExtractOp
         st.ids.into_iter().filter(|(_, count)| *count > 1).map(|(id, _)| id).collect();
     duplicate_ids.sort();
     let text_hash = st.text_hash.map_or_else(|| xxhash_rust::xxh3::xxh3_64(b""), |hash| hash.digest());
-    PageFacts {
+    let facts = PageFacts {
         source,
         extracted: opts,
         lang: st.lang,
@@ -630,7 +700,8 @@ pub fn extract_stream(html: &str, url: &Url, source: Source, options: &ExtractOp
         microdata: if st.microdata { crate::microdata::items(html, &base) } else { Vec::new() },
         html_bytes: html.len(),
         custom: Default::default(),
-    }
+    };
+    (facts, blocks)
 }
 
 

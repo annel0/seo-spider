@@ -55,7 +55,6 @@ rustc-hash = "2"
 # Attributes kept in source order, so extracted HTML reads as written.
 scraper = { version = "0.20", features = ["deterministic"] }
 # scraper's tree, to walk a document's nodes (the same version as scraper's).
-ego-tree = "0.6"
 # XPath 1.0 for custom extraction, evaluated on a copy of the scraper DOM.
 sxd-document = "0.3"
 sxd-xpath = "0.4"

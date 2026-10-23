@@ -1,16 +1,19 @@
 //! A page's content for the detail panel: its documents (as the server
 //! sent it, and rendered) with their visible text in blocks, which the UI
-//! compares to show what JavaScript added. The crawl's own documents when
-//! it kept them (`store.raw_html`, `store.rendered_html`: the dump preset);
-//! otherwise, when asked, the page fetched and rendered now.
+//! compares to show what JavaScript added; blocks of the site's template
+//! (the crawl met them on many pages: menus, header, footer) are marked.
+//! The crawl's own documents when it kept them (`store.raw_html`,
+//! `store.rendered_html`: the dump preset); otherwise, when asked, the
+//! page fetched and rendered now.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
-use seo_page::{text_blocks, TextBlock};
+use seo_page::{block_hash, text_blocks};
 use seo_store::{BodyKind, Store};
 use serde::{Deserialize, Serialize};
 
@@ -20,11 +23,20 @@ use crate::{read, ApiError, ApiResult, AppState};
 const HTML_SHOWN: usize = 2 << 20;
 
 #[derive(Serialize)]
+pub(crate) struct Block {
+    tag: String,
+    text: String,
+    /// Pages of the crawl the block is on, when it is the site's template.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    template: Option<u32>,
+}
+
+#[derive(Serialize)]
 pub(crate) struct Document {
     html: String,
     /// The HTML was cut at `HTML_SHOWN`.
     cut: bool,
-    blocks: Vec<TextBlock>,
+    blocks: Vec<Block>,
 }
 
 #[derive(Serialize)]
@@ -37,6 +49,9 @@ pub(crate) struct Content {
     rendered: Option<Document>,
     /// Why one of them is missing.
     error: Option<String>,
+    /// The crawl knows its site's template (crawls before it was kept
+    /// do not).
+    templated: bool,
 }
 
 #[derive(Deserialize)]
@@ -45,8 +60,13 @@ pub(crate) struct Ask {
     live: Option<bool>,
 }
 
-fn document(html: String) -> Document {
-    let blocks = text_blocks(&html);
+type Template = HashMap<u64, u32>;
+
+fn document(html: String, template: &Template) -> Document {
+    let blocks = text_blocks(&html)
+        .into_iter()
+        .map(|block| Block { template: template.get(&block_hash(&block.tag, &block.text)).copied(), tag: block.tag, text: block.text })
+        .collect();
     let cut = html.len() > HTML_SHOWN;
     let html = if cut { html[..html.floor_char_boundary(HTML_SHOWN)].to_string() } else { html };
     Document { html, cut, blocks }
@@ -68,16 +88,27 @@ pub(crate) async fn content(State(state): State<Arc<AppState>>, Path(id): Path<i
         let reply = read(&state, move |store| {
             let (raw, rendered) = (kept(store, id, BodyKind::Raw)?, kept(store, id, BodyKind::Rendered)?);
             let kept = raw.is_some() || rendered.is_some();
-            Ok(Content { kept, live: false, raw: raw.map(document), rendered: rendered.map(document), error: None })
+            let template = match store.url_crawl(id)? {
+                Some(crawl_id) if kept => store.template_map(crawl_id)?,
+                _ => Template::new(),
+            };
+            Ok(Content {
+                kept,
+                live: false,
+                raw: raw.map(|html| document(html, &template)),
+                rendered: rendered.map(|html| document(html, &template)),
+                error: None,
+                templated: !template.is_empty(),
+            })
         })
         .await?;
         return Ok(Json(reply));
     }
-    let (address, config) = read(&state, move |store| {
+    let (address, config, template) = read(&state, move |store| {
         let page = store.url(id)?.ok_or_else(|| anyhow!("нет такого URL"))?;
         let crawl_id = store.url_crawl(id)?.ok_or_else(|| anyhow!("нет такого URL"))?;
         let config: seo_crawl::CrawlConfig = serde_json::from_str(&store.crawl_config(crawl_id)?).unwrap_or_default();
-        Ok((page.http.url, config))
+        Ok((page.http.url, config, store.template_map(crawl_id)?))
     })
     .await?;
     let url = url::Url::parse(&address).map_err(|error| ApiError(StatusCode::BAD_REQUEST, error.to_string()))?;
@@ -115,9 +146,10 @@ pub(crate) async fn content(State(state): State<Arc<AppState>>, Path(id): Path<i
     let reply = tokio::task::spawn_blocking(move || Content {
         kept: false,
         live: true,
-        raw: raw.map(document),
-        rendered: rendered.map(document),
+        raw: raw.map(|html| document(html, &template)),
+        rendered: rendered.map(|html| document(html, &template)),
         error: (!errors.is_empty()).then(|| errors.join("; ")),
+        templated: !template.is_empty(),
     })
     .await
     .map_err(|error| ApiError(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;

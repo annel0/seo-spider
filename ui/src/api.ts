@@ -202,7 +202,9 @@ export type Outlink = {
   status: number | null;
 };
 
-export type TextBlock = { tag: string; text: string };
+/// A block of visible text; `template`: the pages of the crawl it is on,
+/// when it is the site's template (menus, header, footer).
+export type TextBlock = { tag: string; text: string; template?: number };
 
 /// One document of a page: its HTML (cut at 2 MB) and visible text.
 export type PageDocument = { html: string; cut: boolean; blocks: TextBlock[] };
@@ -215,6 +217,8 @@ export type PageContent = {
   raw: PageDocument | null;
   rendered: PageDocument | null;
   error: string | null;
+  /// The crawl knows its site's template.
+  templated: boolean;
 };
 
 export type StartRequest = {

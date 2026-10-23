@@ -12,6 +12,7 @@ mod config;
 mod fetch;
 mod resume;
 mod robots;
+mod templates;
 mod writer;
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
@@ -302,6 +303,11 @@ async fn run(mut config: CrawlConfig, store: Store, control: CrawlControl, resum
             "continuing"
         );
     }
+    // A crawl continued counts on from its template so far.
+    let templates = Arc::new(std::sync::Mutex::new(match resume {
+        Some(crawl_id) => templates::Templates::resume(store.template(crawl_id)?, summary.pages as u32),
+        None => templates::Templates::default(),
+    }));
     let writer = writer::Writer::spawn(store, crawl_id)?;
 
     let render_threads = config.render.as_ref().map_or(0, |settings| settings.threads);
@@ -346,6 +352,7 @@ async fn run(mut config: CrawlConfig, store: Store, control: CrawlControl, resum
         custom,
         store: config.store.clone(),
         rules,
+        templates: templates.clone(),
     });
     if live_issues && config.use_sitemaps {
         let _ = ctx.in_sitemap.set(in_sitemap.clone());
@@ -541,6 +548,7 @@ async fn run(mut config: CrawlConfig, store: Store, control: CrawlControl, resum
         .collect();
     let states_done = Instant::now();
     store.set_crawl_states(&states)?;
+    store.save_template(crawl_id, &templates.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).blocks())?;
     let saved = Instant::now();
     store.finish_crawl(crawl_id, summary.stopped)?;
     tracing::info!(
@@ -585,6 +593,8 @@ struct Ctx {
     custom: Option<seo_page::CustomRules>,
     store: StoreOptions,
     rules: Rules,
+    /// The text blocks of the site's pages, counted for its template.
+    templates: Arc<std::sync::Mutex<templates::Templates>>,
 }
 
 /// What decides which URLs an outcome leads to.
@@ -766,6 +776,8 @@ struct Item {
 struct Document {
     facts: PageFacts,
     data: Vec<u8>,
+    /// Its distinct text blocks, by `seo_page::block_hash`.
+    blocks: Vec<u64>,
 }
 
 struct Outcome {
@@ -824,9 +836,9 @@ fn pack(bytes: Vec<u8>, level: i32) -> Packed {
     Packed { encoding: "identity", size, data: bytes }
 }
 
-fn document(facts: PageFacts, level: i32) -> Document {
+fn document((facts, blocks): (PageFacts, Vec<u64>), level: i32) -> Document {
     let data = encode_facts(&facts, level).unwrap_or_default();
-    Document { facts, data }
+    Document { facts, data, blocks }
 }
 
 async fn process(ctx: Arc<Ctx>, item: Item) -> Outcome {
@@ -893,19 +905,26 @@ async fn process(ctx: Arc<Ctx>, item: Item) -> Outcome {
         body: body.bytes.clone(),
     });
     let raw = body.map(|body| {
-        let mut facts = seo_page::extract_with(&body.html, &item.url, Source::Raw, &ctx.raw_extract);
+        let (mut facts, blocks) = seo_page::extract_blocks(&body.html, &item.url, Source::Raw, &ctx.raw_extract);
         if let Some(rules) = &ctx.custom {
             facts.custom = rules.run(&body.html);
         }
         if ctx.store.raw_html {
             raw_body = Some(pack(body.bytes, ctx.store.compression_level));
         }
-        document(facts, ctx.store.compression_level)
+        document((facts, blocks), ctx.store.compression_level)
     });
     let rendered = match &ctx.render {
         Some(pool) if renderable => Some(render_page(pool, &item.url, downloaded, &ctx).await),
         _ => None,
     };
+    if item.internal {
+        // The page's blocks, as sent and rendered, count once each.
+        let mut blocks: Vec<u64> = raw.iter().chain(rendered.iter().filter_map(|page| page.document.as_ref())).flat_map(|document| document.blocks.iter().copied()).collect();
+        blocks.sort_unstable();
+        blocks.dedup();
+        ctx.templates.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).page(&blocks);
+    }
     let mut outcome =
         Outcome { item, http, bytes_read, raw, raw_body, rendered, candidates: Vec::new(), unsent: false, issues: Vec::new() };
     outcome.candidates = discover(&outcome, &ctx.rules);
@@ -1065,12 +1084,12 @@ async fn render_page(
         rendered;
     let (document, body) = if error.is_none() {
         let base = Url::parse(&final_url).unwrap_or_else(|_| url.clone());
-        let mut facts = seo_page::extract_with(&html, &base, Source::Rendered, &ctx.extract);
+        let (mut facts, blocks) = seo_page::extract_blocks(&html, &base, Source::Rendered, &ctx.extract);
         if let Some(rules) = &ctx.custom {
             facts.custom = rules.run(&html);
         }
         let body = ctx.store.rendered_html.then(|| pack(html.into_bytes(), ctx.store.compression_level));
-        (Some(document(facts, ctx.store.compression_level)), body)
+        (Some(document((facts, blocks), ctx.store.compression_level)), body)
     } else {
         (None, None)
     };
@@ -1109,7 +1128,7 @@ async fn record(
     if !issues.is_empty() {
         writer.send(Write::Issues { url_id, issues }).await?;
     }
-    if let Some(Document { facts, data }) = raw {
+    if let Some(Document { facts, data, .. }) = raw {
         summary.pages += 1;
         writer.send(Write::Facts { url_id, facts: Box::new(facts), data, links }).await?;
     }
@@ -1122,7 +1141,7 @@ async fn record(
             summary.render_errors += 1;
         }
         writer.send(Write::Render { url_id, render: Box::new(record) }).await?;
-        if let Some(Document { facts, data }) = document {
+        if let Some(Document { facts, data, .. }) = document {
             writer.send(Write::Facts { url_id, facts: Box::new(facts), data, links }).await?;
         }
         if let Some(Packed { encoding, size, data }) = body {
@@ -1619,6 +1638,33 @@ mod tests {
             .map(|row| row.get(0).unwrap())
             .collect();
         assert_eq!(missing, [format!("{}b", summary_start(&store))]);
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_template_is_what_many_pages_share() {
+        let page = |own: &str, links: &str| {
+            format!(
+                "<html><body><nav><ul><li><a href=/>Каталог</a></li><li>Доставка</li></ul></nav>\
+                 <p>{own}</p>{links}<footer>© Фабрика</footer></body></html>"
+            )
+        };
+        let paths = ["/p0", "/p1", "/p2", "/p3", "/p4"];
+        let links: String = paths.iter().map(|path| format!("<a href={path}>{path}</a>")).collect();
+        let mut pages = vec![("/", page("Главная", &links))];
+        pages.extend(paths.iter().map(|path| (*path, page(&format!("Текст {path}"), ""))));
+        let (start, _) = site(pages).await;
+        let path = std::env::temp_dir().join(format!("seo-crawl-template-{}.sqlite", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut config = CrawlConfig::new(start);
+        config.check_external = false;
+        let (store, summary) = crawl(config, Store::open(&path).unwrap()).await.unwrap();
+        let template: std::collections::HashMap<u64, u32> = store.template(summary.crawl_id).unwrap().into_iter().collect();
+        let block = |tag: &str, text: &str| template.get(&seo_page::block_hash(tag, text)).copied();
+        assert_eq!((block("li", "Каталог"), block("li", "Доставка"), block("footer", "© Фабрика")), (Some(6), Some(6), Some(6)));
+        assert_eq!((block("p", "Главная"), block("p", "Текст /p0")), (None, None));
+        assert_eq!(template.len(), 3);
         drop(store);
         let _ = std::fs::remove_file(&path);
     }
