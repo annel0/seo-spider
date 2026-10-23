@@ -379,7 +379,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "bench-site"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "http-body-util",
@@ -5437,7 +5437,7 @@ dependencies = [
 
 [[package]]
 name = "seo-checks"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "isolang",
  "oxilangtag",
@@ -5449,7 +5449,7 @@ dependencies = [
 
 [[package]]
 name = "seo-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -5473,7 +5473,7 @@ dependencies = [
 
 [[package]]
 name = "seo-crawl"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5503,7 +5503,7 @@ dependencies = [
 
 [[package]]
 name = "seo-desktop"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "mimalloc",
@@ -5516,7 +5516,7 @@ dependencies = [
 
 [[package]]
 name = "seo-export"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "csv",
@@ -5531,7 +5531,7 @@ dependencies = [
 
 [[package]]
 name = "seo-page"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "htmlize",
  "lol_html",
@@ -5549,7 +5549,7 @@ dependencies = [
 
 [[package]]
 name = "seo-render"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -5564,7 +5564,7 @@ dependencies = [
 
 [[package]]
 name = "seo-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -5591,7 +5591,7 @@ dependencies = [
 
 [[package]]
 name = "seo-store"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bytes",
