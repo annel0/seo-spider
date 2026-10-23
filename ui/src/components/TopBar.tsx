@@ -40,6 +40,8 @@ export function CommandBar({
   threads,
   changed,
   settingsOpen,
+  schedulesOpen,
+  onSchedules,
   onPreset,
   onLimit,
   onThreads,
@@ -67,6 +69,8 @@ export function CommandBar({
   /// Settings that differ from the preset.
   changed: number;
   settingsOpen: boolean;
+  schedulesOpen: boolean;
+  onSchedules: () => void;
   onPreset: (name: string) => void;
   onLimit: (limit: number | undefined) => void;
   onThreads: (threads: number | undefined) => void;
@@ -126,6 +130,9 @@ export function CommandBar({
           <Icon name="download" /> XLSX
         </a>
       )}
+      <button className={schedulesOpen ? "on" : undefined} onClick={onSchedules} title="Обходы по расписанию и отчёты в Telegram">
+        <Icon name="clock" /> Расписание
+      </button>
       {continuable && (
         <button
           onClick={onContinue}

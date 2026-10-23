@@ -93,7 +93,7 @@ fn reads(config: &CrawlConfig) -> Reads {
 
 /// The two crawls compared over the fields both read, with notes on
 /// settings that make a difference by themselves.
-fn diff(store: &Store, old: i64, new: i64) -> Result<(CrawlDiff, Vec<String>)> {
+pub(crate) fn diff(store: &Store, old: i64, new: i64) -> Result<(CrawlDiff, Vec<String>)> {
     let config = |id: i64| -> Result<CrawlConfig> { Ok(serde_json::from_str(&store.crawl_config(id)?).unwrap_or_default()) };
     let (before, after) = (config(old)?, config(new)?);
     let (was, is) = (reads(&before), reads(&after));

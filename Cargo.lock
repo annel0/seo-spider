@@ -4008,6 +4008,7 @@ dependencies = [
  "csv",
  "futures-util",
  "mime_guess",
+ "reqwest",
  "rust-embed",
  "schemars",
  "seo-checks",

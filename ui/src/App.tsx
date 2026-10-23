@@ -16,6 +16,7 @@ import { DetailPanel } from "./components/DetailPanel";
 import { Icon } from "./components/Icon";
 import { IssuesView } from "./components/IssuesView";
 import { Overview } from "./components/Overview";
+import { Schedules } from "./components/Schedules";
 import { Settings, countChanges } from "./components/Settings";
 import { Sidebar, filterTitle, type View } from "./components/Sidebar";
 import { TabGrid } from "./components/TabGrid";
@@ -50,6 +51,7 @@ export function App() {
   const [base, setBase] = useState<Json>(null);
   const [renderDefaults, setRenderDefaults] = useState<Json>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [schedulesOpen, setSchedulesOpen] = useState(false);
   const settings = useMemo(() => merge(base, patch), [base, patch]);
   // Bumped when a crawl is continued: its progress is listened to again.
   const [session, setSession] = useState(0);
@@ -66,7 +68,9 @@ export function App() {
       .crawls()
       .then((found) => {
         setCrawls(found);
-        if (found.length > 0) setCrawlId(found[0].id);
+        // A report's link opens its crawl: ?crawl=12.
+        const wanted = Number(new URLSearchParams(window.location.search).get("crawl"));
+        if (found.length > 0) setCrawlId(found.some((crawl) => crawl.id === wanted) ? wanted : found[0].id);
       })
       .catch((failure: Error) => setError(failure.message));
   }, []);
@@ -202,16 +206,25 @@ export function App() {
         threads={get(settings, "render") ? Number(get(settings, "render.threads") ?? 0) : null}
         changed={schema && base ? countChanges(schema, base, settings) : 0}
         settingsOpen={settingsOpen}
+        schedulesOpen={schedulesOpen}
+        onSchedules={() => {
+          setSchedulesOpen((open) => !open);
+          setSettingsOpen(false);
+        }}
         onPreset={choosePreset}
         onLimit={(limit) => setPatch((current) => setPath(current, base, "max_urls", limit))}
         onThreads={(threads) =>
           setPatch((current) => setPath(current, base, "render.threads", threads ?? get(base, "render.threads") ?? get(renderDefaults, "threads")))
         }
-        onSettings={() => setSettingsOpen((open) => !open)}
+        onSettings={() => {
+          setSettingsOpen((open) => !open);
+          setSchedulesOpen(false);
+        }}
         onContinue={continueCrawl}
         onSelect={(id) => {
           setCrawlId(id);
           setSettingsOpen(false);
+          setSchedulesOpen(false);
           setView({ kind: "overview" });
         }}
         onStart={start}
@@ -235,6 +248,20 @@ export function App() {
           renderDefaults={renderDefaults}
           onPatch={setPatch}
           onClose={() => setSettingsOpen(false)}
+        />
+      ) : schedulesOpen ? (
+        <Schedules
+          presets={presets}
+          crawls={crawls}
+          preset={preset}
+          patch={withoutBlankRules(patch)}
+          startUrl={crawl?.start_url ?? ""}
+          onOpen={(id) => {
+            setCrawlId(id);
+            setSchedulesOpen(false);
+            setView({ kind: "overview" });
+          }}
+          onClose={() => setSchedulesOpen(false)}
         />
       ) : (
       <div className="main">

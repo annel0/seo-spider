@@ -12,12 +12,14 @@ mod compare;
 mod graph;
 mod mysql;
 mod postgres;
+mod schedule;
 mod schema;
 mod sql;
 mod sqlite;
 mod template;
 mod view;
 
+pub use schedule::Schedule;
 pub use compare::{CrawlDiff, DiffChange, DiffIssue, DiffUrl, IssueShift, FIELDS as COMPARED_FIELDS};
 pub use graph::{LinkRow, Source, LINK, REDIRECT};
 pub use sql::{Backend, Dialect, FromValue, Param, Row, Value};
@@ -702,7 +704,7 @@ pub(crate) mod tests {
     pub(crate) fn empty(target: &str) -> Store {
         if is_server(OsStr::new(target)) {
             let store = Store::open_read(target).unwrap();
-            store.execute("DROP TABLE IF EXISTS crawls, urls, facts, links, renders, bodies, issues, inlinks, template_blocks", &[]).unwrap();
+            store.execute("DROP TABLE IF EXISTS crawls, urls, facts, links, renders, bodies, issues, inlinks, template_blocks, schedules", &[]).unwrap();
         } else {
             let _ = std::fs::remove_file(target);
         }

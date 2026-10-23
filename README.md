@@ -279,6 +279,21 @@ turn. Broken links has every link whose target answered 4xx/5xx or
 nothing, grouped by target with the pages they sit on and their anchors,
 and exports as CSV for whoever fixes the pages.
 
+A page's content tab shows its text in blocks (headings, paragraphs, list
+items, cells) and its HTML as sent and as rendered, from the crawl when it
+kept the documents (the dump preset) or fetched now; blocks JavaScript
+added or rewrote are marked, down to the words. The site's template is
+left out: every crawl counts its pages' text blocks, and the blocks on a
+twentieth of the pages or more (between 10 and 200 of them) are menus,
+header, footer, a section's sidebar, shown only when asked for.
+
+Compare lays a crawl beside an earlier one of the same site: URLs that
+appeared and went, status, title, description, H1, canonical, robots and
+amount of text per URL, and the issues that appeared and were fixed, with
+the balance per issue. Only what both crawls read is compared, and
+settings that make a difference by themselves (JavaScript, checks, the URL
+limit) are noted. The whole comparison exports as CSV.
+
 The settings form is built from the config's JSON Schema
 (`GET /api/config/schema`): every field of `CrawlConfig` shows, starting
 from the chosen preset, with what differs marked and a way back. The crawl
@@ -288,6 +303,25 @@ The server listens on localhost only unless given `--token`, which then
 goes with every API request. `npm run dev` serves the UI with hot reload
 and proxies `/api` to a running `seo-spider ui`. The UI builds where
 native binaries may run (esbuild): not on a `noexec` mount.
+
+## Schedules and Telegram reports
+
+```
+SEO_SPIDER_TELEGRAM_TOKEN=123456:ABC… seo-spider ui --db crawl.sqlite --public-url http://host:7070
+SEO_SPIDER_TELEGRAM_TOKEN=123456:ABC… seo-spider crawl https://example.com/ --db crawl.sqlite --telegram -1001234567890
+```
+
+The UI's Schedule runs a site every day at a time, every week, or every
+few hours, with the preset and settings set when it was added; the server
+starts each when it is due (after the running crawl, one at a time) and
+sends its report to the schedule's Telegram chat: what the crawl found,
+and what changed since the site's previous crawl (new and gone URLs,
+changed pages, new and fixed issues, the issues that moved most), with a
+link to it when `--public-url` is given. A failed crawl is reported too.
+The bot's token is read from `SEO_SPIDER_TELEGRAM_TOKEN`, never from a
+flag (flags show in the process list); add the bot to the chat and check
+it with the form's button. From cron, `crawl --telegram CHAT` sends the
+same report.
 
 ## Acceptance site
 

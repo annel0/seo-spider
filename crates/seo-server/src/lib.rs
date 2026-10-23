@@ -9,6 +9,8 @@ mod compare;
 mod content;
 mod crawls;
 mod links;
+pub mod notify;
+mod schedule;
 mod tabs;
 
 use std::collections::HashMap;
@@ -45,6 +47,8 @@ pub struct ServerOptions {
     pub ui_dir: Option<PathBuf>,
     /// Required on every API request when set (`Authorization: Bearer`).
     pub token: Option<String>,
+    /// Where people open the UI, for links in reports.
+    pub public_url: Option<String>,
 }
 
 struct AppState {
@@ -61,6 +65,9 @@ struct AppState {
     /// crawls that start at a private one. A public page's scripts never
     /// run where they could reach the local network.
     view_pools: [tokio::sync::OnceCell<seo_crawl::RenderPool>; 2],
+    /// The bot that sends schedules' reports, when its token is set.
+    telegram: Option<notify::Telegram>,
+    public_url: Option<String>,
 }
 
 /// Read connections kept open at most.
@@ -81,7 +88,10 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
             graphs: Mutex::new(()),
             graphed: Mutex::new(Default::default()),
             view_pools: [tokio::sync::OnceCell::new(), tokio::sync::OnceCell::new()],
+            telegram: notify::Telegram::from_env(),
+            public_url: options.public_url.clone(),
         });
+    schedule::spawn(state.clone());
     let mut api = Router::new()
         .route("/api/presets", get(presets))
         .route("/api/presets/{name}/config", get(preset_config))
@@ -106,6 +116,10 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
         .route("/api/crawls/{id}/compare", get(compare::compare))
         .route("/api/crawls/{id}/compare.csv", get(compare::compare_csv))
         .route("/api/crawls/{id}/export.xlsx", get(export_xlsx))
+        .route("/api/schedules", get(schedule::list).post(schedule::save))
+        .route("/api/schedules/{id}", axum::routing::delete(schedule::delete))
+        .route("/api/schedules/{id}/run", post(schedule::run_now))
+        .route("/api/telegram/test", post(schedule::test))
         .with_state(state);
     if let Some(token) = options.token.clone() {
         api = api.layer(axum::middleware::from_fn(move |request: axum::extract::Request, next: axum::middleware::Next| {

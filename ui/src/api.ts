@@ -294,6 +294,20 @@ export type Comparison = {
   shifts: IssueShift[];
 };
 
+/// A crawl the server starts on its own: `request` as `start` takes it.
+export type Schedule = {
+  id: number;
+  request: { start_url?: string; preset?: string; config?: JsonObject } & JsonObject;
+  every_hours: number;
+  /// Unix seconds.
+  next_run: number;
+  telegram_chat: string | null;
+  enabled: boolean;
+  last_crawl: number | null;
+};
+/// `telegram`: the server can send reports (its bot token is set).
+export type ScheduleList = { telegram: boolean; schedules: Schedule[] };
+
 export const api = {
   presets: () => call<Preset[]>("/api/presets"),
   presetConfig: (name: string) => call<Json>(`/api/presets/${name}/config`),
@@ -319,6 +333,11 @@ export const api = {
   brokenLinks: (id: number, offset = 0, limit = 200) =>
     call<LinkPage>(`/api/crawls/${id}/broken-links?offset=${offset}&limit=${limit}`),
   compare: (id: number, other: number) => call<Comparison>(`/api/crawls/${id}/compare?with=${other}`),
+  schedules: () => call<ScheduleList>("/api/schedules"),
+  saveSchedule: (schedule: Schedule) => call<{ id: number }>("/api/schedules", { method: "POST", body: JSON.stringify(schedule) }),
+  deleteSchedule: (id: number) => call<void>(`/api/schedules/${id}`, { method: "DELETE" }),
+  runSchedule: (id: number) => call<void>(`/api/schedules/${id}/run`, { method: "POST" }),
+  testTelegram: (chat: string) => call<void>("/api/telegram/test", { method: "POST", body: JSON.stringify({ chat }) }),
   // EventSource sends no headers: the token goes in the address.
   events: (id: number) =>
     new EventSource(`/api/crawls/${id}/events${token ? `?token=${encodeURIComponent(token)}` : ""}`),

@@ -73,6 +73,11 @@ struct UiArgs {
     /// Required on API requests; needed to listen anywhere but localhost.
     #[arg(long)]
     token: Option<String>,
+    /// Where people open the UI (http://host:7070), for links in the
+    /// schedules' Telegram reports; the bot's token is in
+    /// SEO_SPIDER_TELEGRAM_TOKEN.
+    #[arg(long, value_name = "URL")]
+    public_url: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -96,6 +101,11 @@ struct ContinueArgs {
     /// Skip the checks after the crawl.
     #[arg(long)]
     no_checks: bool,
+    /// Send the crawl's report, against the site's previous crawl in the
+    /// database, to this Telegram chat (the bot's token in
+    /// SEO_SPIDER_TELEGRAM_TOKEN). A group's id is negative: -100…
+    #[arg(long, value_name = "CHAT", allow_hyphen_values = true)]
+    telegram: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -136,6 +146,11 @@ struct CrawlArgs {
     /// Print the settings the crawl would run with, as TOML, and exit.
     #[arg(long)]
     print_config: bool,
+    /// Send the crawl's report, against the site's previous crawl in the
+    /// database, to this Telegram chat (the bot's token in
+    /// SEO_SPIDER_TELEGRAM_TOKEN). A group's id is negative: -100…
+    #[arg(long, value_name = "CHAT", allow_hyphen_values = true)]
+    telegram: Option<String>,
 
     /// How much of each internal response to read: status, head or full.
     #[arg(long, value_enum)]
@@ -393,7 +408,13 @@ fn main() -> Result<()> {
             report::report(&store, crawl_id)
         }
         Command::Ui(args) => {
-            let options = seo_server::ServerOptions { db: args.db, bind: args.bind, ui_dir: args.ui_dir, token: args.token };
+            let options = seo_server::ServerOptions {
+                db: args.db,
+                bind: args.bind,
+                ui_dir: args.ui_dir,
+                token: args.token,
+                public_url: args.public_url,
+            };
             tokio::runtime::Runtime::new()?.block_on(seo_server::serve(options))
         }
         Command::Compare(args) => {
@@ -632,7 +653,7 @@ fn crawl(args: CrawlArgs) -> Result<()> {
         bail!("give a start URL, --list or start_urls in --config");
     }
     let store = Store::open(&args.db)?;
-    drive(store, &args.db, args.no_checks, |store, control| seo_crawl::crawl_with(config, store, control))
+    drive(store, &args.db, args.no_checks, args.telegram.as_deref(), |store, control| seo_crawl::crawl_with(config, store, control))
 }
 
 fn continue_crawl(args: ContinueArgs) -> Result<()> {
@@ -650,13 +671,22 @@ fn continue_crawl(args: ContinueArgs) -> Result<()> {
         render.threads = threads;
     }
     eprintln!("continuing crawl {crawl_id} of {}", config.start_urls.first().map_or("", |url| url.as_str()));
-    drive(store, &args.db, args.no_checks, move |store, control| seo_crawl::continue_with(config, store, crawl_id, control))
+    drive(store, &args.db, args.no_checks, args.telegram.as_deref(), move |store, control| {
+        seo_crawl::continue_with(config, store, crawl_id, control)
+    })
 }
 
-/// Runs a crawl to its end on a runtime of its own, then its checks.
-/// Ctrl-C or SIGTERM stops it: what is in flight is finished and stored,
-/// and the checks run on what was crawled.
-fn drive<F>(store: Store, db: &std::path::Path, no_checks: bool, run: impl FnOnce(Store, seo_crawl::CrawlControl) -> F) -> Result<()>
+/// Runs a crawl to its end on a runtime of its own, then its checks, and
+/// sends its report to the `telegram` chat. Ctrl-C or SIGTERM stops it:
+/// what is in flight is finished and stored, and the checks run on what
+/// was crawled.
+fn drive<F>(
+    store: Store,
+    db: &std::path::Path,
+    no_checks: bool,
+    telegram: Option<&str>,
+    run: impl FnOnce(Store, seo_crawl::CrawlControl) -> F,
+) -> Result<()>
 where
     F: std::future::Future<Output = Result<(Store, seo_crawl::CrawlSummary)>>,
 {
@@ -729,6 +759,19 @@ where
         eprintln!("{issues} issues in {:.1} s", checks_started.elapsed().as_secs_f64());
     }
     eprintln!("database: {}", seo_store::describe(db.as_os_str()));
+    if let Some(chat) = telegram {
+        match seo_server::notify::Telegram::from_env() {
+            None => eprintln!("report not sent: SEO_SPIDER_TELEGRAM_TOKEN is not set"),
+            Some(bot) => {
+                let sent = seo_server::notify::report(&store, summary.crawl_id, None)
+                    .and_then(|report| runtime.block_on(bot.send(chat, &report)));
+                match sent {
+                    Ok(()) => eprintln!("report sent to Telegram {chat}"),
+                    Err(error) => eprintln!("report not sent: {error:#}"),
+                }
+            }
+        }
+    }
     // Render threads hold V8 isolates; exiting without tearing them down is
     // faster and safe once the store is closed.
     drop(store);
