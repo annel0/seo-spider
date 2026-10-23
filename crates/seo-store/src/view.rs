@@ -48,6 +48,10 @@ pub struct Overview {
 pub struct StoredRow {
     pub url: crate::StoredUrl,
     pub issues: i64,
+    /// Pages that link or redirect to it, once the link graph is written.
+    pub inlinks: Option<i64>,
+    /// Internal PageRank, 0 to 100.
+    pub link_score: Option<i64>,
 }
 
 /// What `url_rows` returns: the rows asked for and how many match.
@@ -114,6 +118,8 @@ fn sort_expression(key: &str) -> Option<String> {
     Some(match key {
         "url" | "status" | "content_type" | "depth" | "ttfb_ms" | "size" => format!("u.{key}"),
         "title" | "description" | "h1" | "word_count" | "links" | "canonical" => effective_value(key),
+        "inlinks" => "ls.inlinks".into(),
+        "link_score" => "ls.score".into(),
         "title_length" | "description_length" | "h1_length" => {
             format!("length({})", effective_value(key.trim_end_matches("_length")))
         }
@@ -191,14 +197,15 @@ impl Store {
             None => 0,
         };
         let sql = format!(
-            "{} WHERE {filter} ORDER BY {order} IS NULL, {order} {direction}, u.id LIMIT {} OFFSET {}",
+            "{} LEFT JOIN link_scores ls ON ls.url_id = u.id WHERE {filter} \
+             ORDER BY {order} IS NULL, {order} {direction}, u.id LIMIT {} OFFSET {}",
             crate::SELECT_URL,
             query.limit.clamp(1, 5000),
             query.offset.max(0)
         );
         let mut rows = Vec::new();
         self.query(&sql, &values, |row| {
-            rows.push(StoredRow { url: crate::encoded_url(row)?.decode()?, issues: 0 });
+            rows.push(StoredRow { url: crate::encoded_url(row)?.decode()?, issues: 0, inlinks: None, link_score: None });
             Ok(())
         })?;
         if !rows.is_empty() {
@@ -208,8 +215,17 @@ impl Store {
                 counts.insert(row.get::<i64>(0)?, row.get::<i64>(1)?);
                 Ok(())
             })?;
+            let mut scores = std::collections::HashMap::new();
+            self.query(&format!("SELECT url_id, inlinks, score FROM link_scores WHERE url_id IN ({ids})"), &[], |row| {
+                scores.insert(row.get::<i64>(0)?, (row.get::<i64>(1)?, row.get::<Option<i64>>(2)?));
+                Ok(())
+            })?;
             for row in &mut rows {
                 row.issues = counts.get(&row.url.id).copied().unwrap_or(0);
+                if let Some(&(inlinks, score)) = scores.get(&row.url.id) {
+                    row.inlinks = Some(inlinks);
+                    row.link_score = score;
+                }
             }
         }
         Ok(RowsPage { total, rows })
@@ -401,6 +417,7 @@ mod tests {
         writes.push(Write::Issues { url_id: 4, issues: vec![("title_missing", None), ("h1_missing", None)] });
         store.apply(crawl, &writes).unwrap();
         store.ensure_view_indexes().unwrap();
+        store.save_link_scores(crawl, &[(1, 3, Some(100)), (2, 1, Some(40)), (3, 1, Some(10))]).unwrap();
         drop(store);
 
         let store = Store::open_read(path).unwrap();
@@ -443,6 +460,10 @@ mod tests {
         assert_eq!(overview.content_types, [("html".to_string(), 4)]);
         assert_eq!(store.url_issues(4).unwrap().len(), 2);
         assert_eq!(store.crawls().unwrap()[0].urls, 4);
+        // Most linked first; a URL without a score last.
+        let ranked = store.url_rows(crawl, &query("internal", "all", "link_score", true, None)).unwrap();
+        let scores: Vec<(Option<i64>, Option<i64>)> = ranked.rows.iter().map(|row| (row.link_score, row.inlinks)).collect();
+        assert_eq!(scores, [(Some(100), Some(3)), (Some(40), Some(1)), (Some(10), Some(1)), (None, None)]);
         let one = store.url(2).unwrap().unwrap();
         assert_eq!(one.raw.unwrap().title(), Some("About us and the long story"));
     }

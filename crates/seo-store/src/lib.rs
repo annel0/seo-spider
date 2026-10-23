@@ -704,7 +704,7 @@ pub(crate) mod tests {
     pub(crate) fn empty(target: &str) -> Store {
         if is_server(OsStr::new(target)) {
             let store = Store::open_read(target).unwrap();
-            store.execute("DROP TABLE IF EXISTS crawls, urls, facts, links, renders, bodies, issues, inlinks, template_blocks, schedules", &[]).unwrap();
+            store.execute("DROP TABLE IF EXISTS crawls, urls, facts, links, renders, bodies, issues, inlinks, template_blocks, schedules, link_scores", &[]).unwrap();
         } else {
             let _ = std::fs::remove_file(target);
         }

@@ -10,6 +10,7 @@ mod audit;
 mod auto;
 mod config;
 mod fetch;
+mod rank;
 mod resume;
 mod robots;
 mod templates;

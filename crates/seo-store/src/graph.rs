@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use anyhow::{bail, Result};
 use serde::Serialize;
 
-use crate::schema::INLINKS;
+use crate::schema::{INLINKS, LINK_SCORES};
 use crate::{params, Param, Store};
 
 /// How one URL reaches another.
@@ -115,10 +115,32 @@ impl Store {
         })
     }
 
-    /// Whether the crawl's link graph was written (crawls checked before it
-    /// existed have none).
+    /// Whether the crawl's link graph and link scores were written (crawls
+    /// checked before they existed have none).
     pub fn has_edges(&self, crawl_id: i64) -> Result<bool> {
-        Ok(self.query_row("SELECT 1 FROM inlinks WHERE crawl_id = ?1 LIMIT 1", &params![crawl_id])?.is_some())
+        Ok(self.query_row("SELECT 1 FROM link_scores WHERE crawl_id = ?1 LIMIT 1", &params![crawl_id])?.is_some())
+    }
+
+    /// A URL's link score (internal PageRank, 0 to 100), once written.
+    pub fn link_score(&self, url_id: i64) -> Result<Option<i64>> {
+        match self.query_row("SELECT score FROM link_scores WHERE url_id = ?1", &params![url_id])? {
+            Some(row) => row.get(0),
+            None => Ok(None),
+        }
+    }
+
+    /// Replaces the crawl's link scores: per URL, the pages linking to it
+    /// and its internal PageRank as 0 to 100 (none for an external URL).
+    pub fn save_link_scores(&mut self, crawl_id: i64, scores: &[(i64, i64, Option<i64>)]) -> Result<()> {
+        self.transaction(|db| {
+            db.execute("DELETE FROM link_scores WHERE crawl_id = ?1", &params![crawl_id])?;
+            for slice in scores.chunks(16_384) {
+                let rows: Vec<Vec<Param>> =
+                    slice.iter().map(|(url_id, inlinks, score)| params![*url_id, crawl_id, *inlinks, *score].to_vec()).collect();
+                db.insert_rows(&LINK_SCORES, &rows)?;
+            }
+            Ok(())
+        })
     }
 
     /// The crawl a URL belongs to.
@@ -249,7 +271,12 @@ mod tests {
         store.save_inlinks(crawl, &mut graph()).unwrap();
         // Saving again replaces.
         store.save_inlinks(crawl, &mut graph()).unwrap();
+        assert!(!store.has_edges(crawl).unwrap(), "the graph is whole with its scores");
+        let scores = [(1, 0, Some(100)), (2, 2, Some(60)), (3, 2, Some(20)), (4, 0, None)];
+        store.save_link_scores(crawl, &scores).unwrap();
+        store.save_link_scores(crawl, &scores).unwrap();
         assert!(store.has_edges(crawl).unwrap());
+        assert_eq!((store.link_score(2).unwrap(), store.link_score(4).unwrap()), (Some(60), None));
         assert_eq!(store.url_crawl(2).unwrap(), Some(crawl));
         let (total, rows) = store.inlinks(crawl, 2, 0, 10).unwrap();
         assert_eq!(total, 2);

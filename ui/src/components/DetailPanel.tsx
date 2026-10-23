@@ -86,6 +86,7 @@ export function DetailPanel({ urlId, onOpen }: { urlId: number; onOpen?: (urlId:
         <Flag ok={detail.in_sitemap} label="В sitemap" quiet={!detail.in_sitemap} />
         {detail.render && <Flag ok={!detail.render.error} label={detail.render.error ? "JS-рендер с ошибкой" : "JS выполнен"} />}
         {detail.depth !== null && <Fact value={String(detail.depth)} name="клик от главной" />}
+        {detail.link_score !== null && <Fact value={String(detail.link_score)} name="Link Score" />}
         {detail.status > 0 && <Fact value={`${detail.ttfb_ms} мс`} name="ответ" />}
         <Fact value={formatBytes(detail.size)} name="" />
         {facts && <Fact value={formatCount(facts.word_count)} name="слов" />}

@@ -272,6 +272,12 @@ row opens its detail panel. The issues view lists every issue found by
 importance and opens the tab filtered to it. A tab exports as CSV with its
 filter, search and sort; the whole crawl as XLSX.
 
+Internal and Links have each URL's inlinks (pages that link or redirect to
+it) and its Link Score: internal PageRank over the crawl's followed links
+(nofollow passes nothing, a redirect passes it on), 0 for a URL nothing
+links to and 100 for the most linked, on a log scale; both sort. On the
+100,000-page bench it adds 0.4 s to the checks.
+
 Every URL's detail panel lists its inlinks (the pages that link or
 redirect to it, with their anchors, nofollow and how many links) and its
 outlinks (each with its target's status); a page in either list opens in

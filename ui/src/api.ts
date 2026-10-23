@@ -140,6 +140,8 @@ export type UrlDetail = {
   depth: number | null;
   in_sitemap: boolean;
   blocked_by_robots: boolean;
+  /// Internal PageRank, 0 to 100.
+  link_score: number | null;
   facts: {
     source: "raw" | "rendered";
     lang: string | null;

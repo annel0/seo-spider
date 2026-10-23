@@ -135,8 +135,10 @@ pub fn run_checks(store: &mut Store, crawl_id: i64) -> Result<usize> {
     let saved = started.elapsed();
     let targets = crate::LinkTargets::new(&serde_json::from_str(&settings).unwrap_or_default())?;
     let mut graph = inlinks(&site, &ids, &targets);
+    let internal: Vec<bool> = site.iter().map(|page| !page.external).collect();
     drop(site);
     let edges: usize = graph.iter().map(|(_, sources)| sources.len()).sum();
+    store.save_link_scores(crawl_id, &crate::rank::link_scores(&graph, &internal))?;
     store.save_inlinks(crawl_id, &mut graph)?;
     tracing::info!(
         pages_s = pages_done.as_secs_f64(),

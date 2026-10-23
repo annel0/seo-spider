@@ -674,6 +674,8 @@ struct UrlDetail {
     depth: Option<u32>,
     in_sitemap: bool,
     blocked_by_robots: bool,
+    /// Internal PageRank, 0 to 100, once the link graph is written.
+    link_score: Option<i64>,
     facts: Option<FactsSummary>,
     render: Option<seo_page::RenderSummary>,
     issues: Vec<UrlIssue>,
@@ -710,7 +712,8 @@ struct UrlIssue {
 }
 
 async fn url_detail(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> ApiResult<UrlDetail> {
-    let (stored, issues) = read(&state, move |store| Ok((store.url(id)?, store.url_issues(id)?))).await?;
+    let (stored, issues, link_score) =
+        read(&state, move |store| Ok((store.url(id)?, store.url_issues(id)?, store.link_score(id)?))).await?;
     let stored = stored.ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "нет такого URL".into()))?;
     let facts = stored.facts().map(|facts| {
         let host = url::Url::parse(&stored.http.url).ok().and_then(|url| url.host_str().map(str::to_string));
@@ -751,6 +754,7 @@ async fn url_detail(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> 
         depth: stored.depth,
         in_sitemap: stored.in_sitemap,
         blocked_by_robots: stored.blocked_by_robots,
+        link_score,
         render: stored.render.clone(),
         facts,
         issues: issues

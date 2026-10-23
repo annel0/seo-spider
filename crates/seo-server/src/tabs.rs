@@ -97,6 +97,8 @@ pub static TABS: &[Tab] = &[
                 column("ttfb", "Ответ", Ms, Some("ttfb_ms"), 80),
                 column("size", "Размер", Bytes, Some("size"), 84),
                 column("links", "Ссылок", Number, Some("links"), 72),
+                column("inlinks", "Входящих", Number, Some("inlinks"), 84),
+                column("link_score", "Link Score", Number, Some("link_score"), 84),
                 issues(),
                 column("rendered", "JS", Bool, None, 48),
             ]
@@ -317,6 +319,8 @@ pub static TABS: &[Tab] = &[
                 column("links_internal", "Внутренних", Number, None, 92),
                 column("links_external", "Внешних", Number, None, 80),
                 column("links_nofollow", "nofollow", Number, None, 80),
+                column("inlinks", "Входящих", Number, Some("inlinks"), 84),
+                column("link_score", "Link Score", Number, Some("link_score"), 84),
                 column("depth", "Глубина", Number, Some("depth"), 72),
                 issues(),
             ]
@@ -496,6 +500,8 @@ pub fn cell(key: &str, row: &StoredRow, structured: &mut Option<seo_checks::Stru
         "in_sitemap" => json!(stored.in_sitemap),
         "indexable" => json!(indexability(row)),
         "issues" => json!(row.issues),
+        "inlinks" => json!(row.inlinks),
+        "link_score" => json!(row.link_score),
         "url_length" => count(http.url.chars().count()),
         "title" => with_facts(&|facts| json!(facts.title())),
         "title_length" => with_facts(&|facts| json!(facts.title().map(|title| title.chars().count()))),
@@ -673,7 +679,7 @@ mod tests {
             rendered: None,
             render: None,
         };
-        StoredRow { url, issues: 3 }
+        StoredRow { url, issues: 3, inlinks: Some(4), link_score: Some(37) }
     }
 
     const PAGE: &str = r#"<html lang="ru"><head>
