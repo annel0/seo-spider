@@ -1595,3 +1595,106 @@ button.template-toggle.on {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* Structure: the treemap, and the picked section's figures beside it. */
+
+.structure {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  min-height: 0;
+  background: var(--panel);
+}
+
+.structure-map {
+  min-height: 0;
+  padding: 10px 12px 12px;
+}
+
+.structure-side {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 16px;
+  border-left: 1px solid var(--rule);
+}
+
+.structure-side > button {
+  align-self: flex-start;
+}
+
+.section-path {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.section-figures {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.section-figures .value {
+  font-family: var(--figures);
+  font-variant-numeric: tabular-nums;
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.section-figures .name {
+  color: var(--ink-2);
+}
+
+.section-parts {
+  display: flex;
+  flex-direction: column;
+}
+
+.section-part {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 70px 52px;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  cursor: pointer;
+  box-shadow: 0 1px 0 var(--rule);
+}
+
+.section-part:hover {
+  background: var(--panel-2);
+}
+
+.section-part .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.section-part .track {
+  height: 8px;
+  background: var(--panel-3);
+}
+
+.section-part .track > span {
+  display: block;
+  height: 100%;
+}
+
+.section-part .num {
+  font-family: var(--figures);
+  text-align: right;
+}
+
+@media (max-width: 900px) {
+  .structure {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(320px, 1fr) auto;
+  }
+
+  .structure-side {
+    border-left: 0;
+    border-top: 1px solid var(--rule);
+  }
+}

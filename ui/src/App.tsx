@@ -19,6 +19,7 @@ import { Overview } from "./components/Overview";
 import { Schedules } from "./components/Schedules";
 import { Settings, countChanges } from "./components/Settings";
 import { Sidebar, filterTitle, type View } from "./components/Sidebar";
+import { Structure } from "./components/Structure";
 import { TabGrid } from "./components/TabGrid";
 import { CommandBar, Telemetry } from "./components/TopBar";
 import { useInterval, useProgress } from "./hooks";
@@ -283,6 +284,15 @@ export function App() {
               <BrokenLinks crawlId={crawlId} onSelect={setSelected} />
               {detail}
             </>
+          ) : view.kind === "structure" ? (
+            <Structure
+              key={crawlId}
+              crawlId={crawlId}
+              onOpen={(path) => {
+                open({ kind: "tab", tab: "internal", filter: "all" });
+                setSearchInput(path === "/" ? "" : path);
+              }}
+            />
           ) : view.kind === "compare" && crawl ? (
             <>
               <CompareView key={crawl.id} crawl={crawl} crawls={crawls} onSelect={setSelected} />

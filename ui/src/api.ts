@@ -310,6 +310,26 @@ export type Schedule = {
 /// `telegram`: the server can send reports (its bot token is set).
 export type ScheduleList = { telegram: boolean; schedules: Schedule[] };
 
+/// A section of the site: its path, figures, and parts; `value` (URLs) on
+/// leaves only, so a section is the sum of its parts.
+export type StructureNode = {
+  name: string;
+  /// As people read it.
+  path: string;
+  /// As the URLs have it, for the tables' search.
+  search: string;
+  urls: number;
+  pages: number;
+  errors: number;
+  redirects: number;
+  with_issues: number;
+  /// URLs with an issue of high importance.
+  serious: number;
+  best_score: number | null;
+  value?: number;
+  children?: StructureNode[];
+};
+
 export const api = {
   presets: () => call<Preset[]>("/api/presets"),
   presetConfig: (name: string) => call<Json>(`/api/presets/${name}/config`),
@@ -334,6 +354,7 @@ export const api = {
   content: (id: number, live = false) => call<PageContent>(`/api/urls/${id}/content${live ? "?live=true" : ""}`),
   brokenLinks: (id: number, offset = 0, limit = 200) =>
     call<LinkPage>(`/api/crawls/${id}/broken-links?offset=${offset}&limit=${limit}`),
+  structure: (id: number, all = false) => call<StructureNode>(`/api/crawls/${id}/structure${all ? "?all=true" : ""}`),
   compare: (id: number, other: number) => call<Comparison>(`/api/crawls/${id}/compare?with=${other}`),
   schedules: () => call<ScheduleList>("/api/schedules"),
   saveSchedule: (schedule: Schedule) => call<{ id: number }>("/api/schedules", { method: "POST", body: JSON.stringify(schedule) }),

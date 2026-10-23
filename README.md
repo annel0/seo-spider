@@ -293,6 +293,12 @@ left out: every crawl counts its pages' text blocks, and the blocks on a
 twentieth of the pages or more (between 10 and 200 of them) are menus,
 header, footer, a section's sidebar, shown only when asked for.
 
+Structure draws the site as a treemap of its sections by path: a
+section's area is its pages (or all its URLs), its colour the share that
+answered with an error, the share with issues of high importance, or its
+best Link Score. A click goes into a section; beside it are its figures
+and largest parts, and its URLs open in the table.
+
 Compare lays a crawl beside an earlier one of the same site: URLs that
 appeared and went, status, title, description, H1, canonical, robots and
 amount of text per URL, and the issues that appeared and were fixed, with

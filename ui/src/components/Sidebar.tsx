@@ -7,6 +7,7 @@ export type View =
   | { kind: "issues" }
   | { kind: "broken" }
   | { kind: "compare" }
+  | { kind: "structure" }
   | { kind: "tab"; tab: string; filter: string };
 
 /// Where to go: the overview, the issues, then the tabs. The open tab
@@ -52,6 +53,11 @@ export function Sidebar({
           <span className="count">{formatCount(broken)}</span>
         </div>
       )}
+
+      <div className={`nav-row top ${view.kind === "structure" ? "on" : ""}`} onClick={() => onView({ kind: "structure" })}>
+        <Icon name="map" />
+        <span className="label">Структура</span>
+      </div>
 
       {comparable > 0 && (
         <div className={`nav-row top ${view.kind === "compare" ? "on" : ""}`} onClick={() => onView({ kind: "compare" })}>

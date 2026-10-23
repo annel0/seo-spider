@@ -11,6 +11,7 @@ mod crawls;
 mod links;
 pub mod notify;
 mod schedule;
+mod structure;
 mod tabs;
 
 use std::collections::HashMap;
@@ -115,6 +116,7 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
         .route("/api/crawls/{id}/broken-links.csv", get(links::broken_links_csv))
         .route("/api/crawls/{id}/compare", get(compare::compare))
         .route("/api/crawls/{id}/compare.csv", get(compare::compare_csv))
+        .route("/api/crawls/{id}/structure", get(structure::structure))
         .route("/api/crawls/{id}/export.xlsx", get(export_xlsx))
         .route("/api/schedules", get(schedule::list).post(schedule::save))
         .route("/api/schedules/{id}", axum::routing::delete(schedule::delete))
