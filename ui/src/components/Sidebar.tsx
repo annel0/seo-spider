@@ -2,18 +2,25 @@ import type { IssueCount, TabDef, TabFilter } from "../api";
 import { filterLabels, formatCount, severityColor, statusColor } from "../labels";
 import { Icon } from "./Icon";
 
-export type View = { kind: "overview" } | { kind: "issues" } | { kind: "tab"; tab: string; filter: string };
+export type View =
+  | { kind: "overview" }
+  | { kind: "issues" }
+  | { kind: "broken" }
+  | { kind: "tab"; tab: string; filter: string };
 
 /// Where to go: the overview, the issues, then the tabs. The open tab
 /// unfolds into its filters, each with a bar of its share of the tab.
 export function Sidebar({
   tabs,
   issues,
+  broken,
   view,
   onView,
 }: {
   tabs: TabDef[];
   issues: IssueCount[];
+  /// Broken links of the crawl; null until its link graph exists.
+  broken: number | null;
   view: View;
   onView: (view: View) => void;
 }) {
@@ -32,6 +39,15 @@ export function Sidebar({
         {worst && <span className="square" style={{ background: `var(${severityColor(worst)})` }} />}
         <span className="count">{formatCount(affected.length)}</span>
       </div>
+
+      {broken !== null && (
+        <div className={`nav-row top ${view.kind === "broken" ? "on" : ""}`} onClick={() => onView({ kind: "broken" })}>
+          <Icon name="link" />
+          <span className="label">Битые ссылки</span>
+          {broken > 0 && <span className="square" style={{ background: "var(--bad)" }} />}
+          <span className="count">{formatCount(broken)}</span>
+        </div>
+      )}
 
       <div className="nav-group">
         <Icon name="table" size={14} />

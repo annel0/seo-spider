@@ -104,6 +104,17 @@ CREATE TABLE IF NOT EXISTS issues (
     detail TEXT
 );
 CREATE INDEX IF NOT EXISTS issues_code ON issues (crawl_id, code);
+
+-- The link graph between the crawl's URLs, written after its checks: per
+-- target, the pages that link or redirect to it, packed (see graph.rs);
+-- anchors stay in the source pages' facts.
+CREATE TABLE IF NOT EXISTS inlinks (
+    crawl_id INTEGER NOT NULL,
+    to_id INTEGER NOT NULL,
+    sources INTEGER NOT NULL,
+    data BLOB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS inlinks_to ON inlinks (crawl_id, to_id);
 "#;
 
 pub const POSTGRES: &str = r#"
@@ -183,6 +194,13 @@ CREATE TABLE IF NOT EXISTS issues (
     detail TEXT
 );
 CREATE INDEX IF NOT EXISTS issues_code ON issues (crawl_id, code);
+CREATE TABLE IF NOT EXISTS inlinks (
+    crawl_id BIGINT NOT NULL,
+    to_id BIGINT NOT NULL,
+    sources BIGINT NOT NULL,
+    data BYTEA NOT NULL
+);
+CREATE INDEX IF NOT EXISTS inlinks_to ON inlinks (crawl_id, to_id);
 -- Facts and bodies are zstd already: storing them as they are saves
 -- PostgreSQL compressing them again for nothing. Only once: the change
 -- locks the table against readers.
@@ -272,7 +290,14 @@ CREATE TABLE IF NOT EXISTS issues (
     code VARCHAR(64) NOT NULL,
     detail TEXT,
     KEY issues_code (crawl_id, code)
-) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_bin
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_bin;
+CREATE TABLE IF NOT EXISTS inlinks (
+    crawl_id BIGINT NOT NULL,
+    to_id BIGINT NOT NULL,
+    sources BIGINT NOT NULL,
+    data LONGBLOB NOT NULL,
+    KEY inlinks_to (crawl_id, to_id)
+) ENGINE = InnoDB
 "#;
 
 /// The schema of a dialect.
@@ -387,6 +412,11 @@ pub const BODIES: Columns<'static> = Columns {
 pub const ISSUES: Columns<'static> = Columns {
     table: "issues",
     columns: &[("crawl_id", Kind::Int), ("url_id", Kind::Int), ("code", Kind::Text), ("detail", Kind::Text)],
+};
+
+pub const INLINKS: Columns<'static> = Columns {
+    table: "inlinks",
+    columns: &[("crawl_id", Kind::Int), ("to_id", Kind::Int), ("sources", Kind::Int), ("data", Kind::Blob)],
 };
 
 /// What the end of a crawl settles per URL; `id` finds the row.

@@ -173,6 +173,35 @@ export type UrlDetail = {
   issues: UrlIssue[];
 };
 
+/// A link between two of the crawl's URLs.
+export type LinkItem = {
+  from_id: number;
+  from_url: string;
+  to_id: number;
+  to_url: string;
+  /// The target's status.
+  status: number;
+  redirect: boolean;
+  links: number;
+  nofollow: boolean;
+  anchors: string[];
+};
+
+/// `ready` is false while the crawl's link graph is not written (it is at
+/// the end of the crawl's checks).
+export type LinkPage = { ready: boolean; total: number; rows: LinkItem[] };
+
+/// A link as the page has it, with its target's row when crawled.
+export type Outlink = {
+  url: string;
+  anchor: string;
+  nofollow: boolean;
+  position: string;
+  image: boolean;
+  id: number | null;
+  status: number | null;
+};
+
 export type StartRequest = {
   start_url: string;
   preset: string;
@@ -230,6 +259,10 @@ export const api = {
   rows: (id: number, tab: string, query: RowsQuery, offset: number, limit: number) =>
     call<TabRows>(`/api/crawls/${id}/tabs/${tab}/rows?${rowsParams(query, { offset: String(offset), limit: String(limit) })}`),
   url: (id: number) => call<UrlDetail>(`/api/urls/${id}`),
+  inlinks: (id: number, offset = 0, limit = 100) => call<LinkPage>(`/api/urls/${id}/inlinks?offset=${offset}&limit=${limit}`),
+  outlinks: (id: number) => call<Outlink[]>(`/api/urls/${id}/outlinks`),
+  brokenLinks: (id: number, offset = 0, limit = 200) =>
+    call<LinkPage>(`/api/crawls/${id}/broken-links?offset=${offset}&limit=${limit}`),
   // EventSource sends no headers: the token goes in the address.
   events: (id: number) =>
     new EventSource(`/api/crawls/${id}/events${token ? `?token=${encodeURIComponent(token)}` : ""}`),
@@ -250,6 +283,7 @@ const withToken = (params: URLSearchParams) => {
 
 export const downloads = {
   xlsx: (id: number) => `/api/crawls/${id}/export.xlsx${withToken(new URLSearchParams())}`,
+  brokenLinks: (id: number) => `/api/crawls/${id}/broken-links.csv${withToken(new URLSearchParams())}`,
   csv: (id: number, tab: string, query: RowsQuery) => `/api/crawls/${id}/tabs/${tab}/export.csv${withToken(rowsParams(query))}`,
 };
 

@@ -8,6 +8,7 @@ use std::cell::RefCell;
 use std::ffi::OsStr;
 use std::path::Path;
 
+mod graph;
 mod mysql;
 mod postgres;
 mod schema;
@@ -15,6 +16,7 @@ mod sql;
 mod sqlite;
 mod view;
 
+pub use graph::{LinkRow, Source, LINK, REDIRECT};
 pub use sql::{Backend, Dialect, FromValue, Param, Row, Value};
 pub use view::{CrawlInfo, Overview, RowQuery, RowsPage, StoredRow, FILTERS, SCOPES};
 
@@ -697,7 +699,7 @@ pub(crate) mod tests {
     pub(crate) fn empty(target: &str) -> Store {
         if is_server(OsStr::new(target)) {
             let store = Store::open_read(target).unwrap();
-            store.execute("DROP TABLE IF EXISTS crawls, urls, facts, links, renders, bodies, issues", &[]).unwrap();
+            store.execute("DROP TABLE IF EXISTS crawls, urls, facts, links, renders, bodies, issues, inlinks", &[]).unwrap();
         } else {
             let _ = std::fs::remove_file(target);
         }

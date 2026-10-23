@@ -6,6 +6,7 @@
 
 mod assets;
 mod crawls;
+mod links;
 mod tabs;
 
 use std::collections::HashMap;
@@ -50,6 +51,9 @@ struct AppState {
     /// Read connections kept between requests: a database server's cost a
     /// connection (and a thread) each to open.
     readers: std::sync::Mutex<Vec<Store>>,
+    /// One link graph is built at a time, once per crawl (see `links`).
+    graphs: Mutex<()>,
+    graphed: Mutex<std::collections::HashSet<i64>>,
 }
 
 /// Read connections kept open at most.
@@ -63,7 +67,13 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
     // Creates the file and its schema when there is none yet.
     drop(Store::open(&options.db)?);
     let state =
-        Arc::new(AppState { db: options.db.clone(), running: Mutex::new(None), readers: std::sync::Mutex::new(Vec::new()) });
+        Arc::new(AppState {
+            db: options.db.clone(),
+            running: Mutex::new(None),
+            readers: std::sync::Mutex::new(Vec::new()),
+            graphs: Mutex::new(()),
+            graphed: Mutex::new(Default::default()),
+        });
     let mut api = Router::new()
         .route("/api/presets", get(presets))
         .route("/api/presets/{name}/config", get(preset_config))
@@ -80,6 +90,10 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
         .route("/api/crawls/{id}/tabs/{tab}/rows", get(tab_rows))
         .route("/api/crawls/{id}/tabs/{tab}/export.csv", get(export_csv))
         .route("/api/urls/{id}", get(url_detail))
+        .route("/api/urls/{id}/inlinks", get(links::inlinks))
+        .route("/api/urls/{id}/outlinks", get(links::outlinks))
+        .route("/api/crawls/{id}/broken-links", get(links::broken_links))
+        .route("/api/crawls/{id}/broken-links.csv", get(links::broken_links_csv))
         .route("/api/crawls/{id}/export.xlsx", get(export_xlsx))
         .with_state(state);
     if let Some(token) = options.token.clone() {

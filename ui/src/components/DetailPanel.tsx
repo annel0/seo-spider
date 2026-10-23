@@ -1,28 +1,54 @@
 import { useEffect, useState } from "react";
-import { api, type UrlDetail } from "../api";
+import { api, type LinkPage, type Outlink, type UrlDetail } from "../api";
 import { formatBytes, formatCount, readableUrl, severityColor, severityLabels, statusClass, statusColor } from "../labels";
 import { Icon } from "./Icon";
 
-type Tab = "summary" | "issues" | "headers" | "custom";
+type Tab = "summary" | "issues" | "in" | "out" | "headers" | "custom";
 
 /// The selected URL: the status as a block, a strip of facts, then tabs.
-export function DetailPanel({ urlId }: { urlId: number }) {
+/// A page in its links opens here in turn.
+export function DetailPanel({ urlId, onOpen }: { urlId: number; onOpen?: (urlId: number) => void }) {
   const [detail, setDetail] = useState<UrlDetail | null>(null);
   const [tab, setTab] = useState<Tab>("summary");
   const [error, setError] = useState<string | null>(null);
+  const [inlinks, setInlinks] = useState<LinkPage | null>(null);
+  const [outlinks, setOutlinks] = useState<Outlink[] | null>(null);
 
   useEffect(() => {
     setDetail(null);
     setError(null);
+    setInlinks(null);
+    setOutlinks(null);
     let current = true;
     api
       .url(urlId)
       .then((found) => current && setDetail(found))
       .catch((failure: Error) => current && setError(failure.message));
+    api
+      .inlinks(urlId)
+      .then((found) => current && setInlinks(found))
+      .catch(() => undefined);
     return () => {
       current = false;
     };
   }, [urlId]);
+
+  useEffect(() => {
+    if (tab !== "out" || outlinks !== null) return;
+    let current = true;
+    api
+      .outlinks(urlId)
+      .then((found) => current && setOutlinks(found))
+      .catch(() => current && setOutlinks([]));
+    return () => {
+      current = false;
+    };
+  }, [tab, urlId, outlinks]);
+
+  const more = () => {
+    if (!inlinks) return;
+    api.inlinks(urlId, inlinks.rows.length).then((next) => setInlinks({ ...next, rows: [...inlinks.rows, ...next.rows] }));
+  };
 
   if (error) return <div className="error-banner">{error}</div>;
   if (!detail) return <div className="empty">Загрузка</div>;
@@ -80,6 +106,8 @@ export function DetailPanel({ urlId }: { urlId: number }) {
       <div className="tabs" role="tablist">
         <TabButton tab="summary" current={tab} onSelect={setTab} label="Страница" />
         <TabButton tab="issues" current={tab} onSelect={setTab} label={`Проблемы ${detail.issues.length}`} />
+        <TabButton tab="in" current={tab} onSelect={setTab} label={`Входящие ${inlinks?.ready ? formatCount(inlinks.total) : "…"}`} />
+        {facts && <TabButton tab="out" current={tab} onSelect={setTab} label={`Исходящие ${formatCount(facts.links)}`} />}
         <TabButton tab="headers" current={tab} onSelect={setTab} label="Заголовки ответа" />
         {hasCustom && <TabButton tab="custom" current={tab} onSelect={setTab} label="Своё извлечение" />}
       </div>
@@ -118,6 +146,56 @@ export function DetailPanel({ urlId }: { urlId: number }) {
             </div>
           ))
         ))}
+      {tab === "in" &&
+        (!inlinks ? (
+          <div className="kv">
+            <Row name="Входящие" value="загрузка" />
+          </div>
+        ) : !inlinks.ready ? (
+          <div className="kv">
+            <Row name="Входящие" value="появятся, когда обход и проверки закончатся" />
+          </div>
+        ) : inlinks.total === 0 ? (
+          <div className="kv">
+            <Row name="Входящие" value="ни одна страница обхода сюда не ссылается" colour="--warn" />
+          </div>
+        ) : (
+          <div className="links">
+            {inlinks.rows.map((link) => (
+              <LinkLine
+                key={`${link.from_id}-${link.redirect}`}
+                url={link.from_url}
+                onOpen={onOpen && (() => onOpen(link.from_id))}
+                anchors={link.redirect ? [] : link.anchors}
+                badges={[link.redirect && "редирект", link.nofollow && "nofollow", link.links > 1 && `×${link.links}`]}
+              />
+            ))}
+            {inlinks.rows.length < inlinks.total && (
+              <button className="ghost" onClick={more}>
+                Ещё {formatCount(inlinks.total - inlinks.rows.length)}
+              </button>
+            )}
+          </div>
+        ))}
+      {tab === "out" &&
+        (!outlinks ? (
+          <div className="kv">
+            <Row name="Исходящие" value="загрузка" />
+          </div>
+        ) : (
+          <div className="links">
+            {outlinks.map((link, at) => (
+              <LinkLine
+                key={at}
+                url={link.url}
+                status={link.status}
+                onOpen={onOpen && link.id !== null ? () => onOpen(link.id as number) : undefined}
+                anchors={[link.anchor || (link.image ? "[картинка]" : "")].filter(Boolean)}
+                badges={[link.nofollow && "nofollow", link.position !== "content" && positions[link.position]]}
+              />
+            ))}
+          </div>
+        ))}
       {tab === "headers" && (
         <div className="kv">
           {detail.headers.map(([name, value], at) => (
@@ -138,6 +216,51 @@ export function DetailPanel({ urlId }: { urlId: number }) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+const positions: Record<string, string> = { header: "шапка", nav: "меню", footer: "подвал", aside: "сбоку" };
+
+/// One link in a list: the page or target, its anchors, what is special
+/// about it; the target's status as a block, for a list of targets.
+export function LinkLine({
+  url,
+  status,
+  anchors,
+  badges,
+  onOpen,
+}: {
+  url: string;
+  status?: number | null;
+  anchors: string[];
+  badges: (string | false)[];
+  onOpen?: () => void;
+}) {
+  return (
+    <div className={`link-line ${status === undefined ? "bare" : ""}`}>
+      {status !== undefined && (
+        <span className="code" style={{ background: status === null ? "var(--panel-3)" : `var(${statusColor(statusClass(status))})` }}>
+          {status === null ? "—" : status || "—"}
+        </span>
+      )}
+      <span className="where">
+        {onOpen ? (
+          <button className="link" onClick={onOpen} title="Открыть эту страницу">
+            {readableUrl(url)}
+          </button>
+        ) : (
+          <span className="plain">{readableUrl(url)}</span>
+        )}
+        {anchors.length > 0 && <span className="anchors">{anchors.map((anchor) => `«${anchor}»`).join(", ")}</span>}
+      </span>
+      <span className="badges">
+        {badges.filter(Boolean).map((badge) => (
+          <span key={badge as string} className="badge-soft">
+            {badge}
+          </span>
+        ))}
+      </span>
     </div>
   );
 }

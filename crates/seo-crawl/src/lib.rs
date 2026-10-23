@@ -1213,6 +1213,25 @@ fn discover_from(
     candidates
 }
 
+/// How the crawler turns a link into the URL it queues: resolved, no
+/// fragment, the parameters the settings strip removed. Views match links
+/// to the crawl's URLs with it.
+pub struct LinkTargets {
+    filters: Filters,
+}
+
+impl LinkTargets {
+    pub fn new(config: &CrawlConfig) -> Result<Self> {
+        Ok(LinkTargets { filters: Filters::new(config)? })
+    }
+
+    /// The URL a link leads to as the crawl knows it; `None` for what the
+    /// crawl never requests (`mailto:`, unparsable).
+    pub fn target(&self, href: &str) -> Option<String> {
+        Url::parse(href).ok().and_then(|url| self.filters.normalize(url)).map(String::from)
+    }
+}
+
 /// Include/exclude patterns and query parameters to drop.
 struct Filters {
     include: RegexSet,
@@ -1697,6 +1716,48 @@ mod tests {
         assert_eq!(done.urls, 9);
         assert_eq!(crawled(&store, crawl_id), expected);
         assert_eq!(requests.load(Ordering::SeqCst), 10, "only the page without facts is requested again");
+    }
+
+    /// The checks write the link graph: links matched to the URLs as the
+    /// crawl queued them, nofollow kept, broken targets found.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn checks_write_the_link_graph() {
+        let page = |links: &str| format!("<html><head><title>Page</title></head><body>{links}</body></html>");
+        let (start, _) = site(vec![
+            ("/", page("<a href=/a>a</a><a href='/b?ref=nav'>b</a><a href=/gone>gone</a>")),
+            ("/a", page("<a href=/b>b</a><a href=/>home</a>")),
+            ("/b", page("<a href=/a rel=nofollow>a</a>")),
+        ])
+        .await;
+        let path = std::env::temp_dir().join(format!("seo-crawl-graph-{}.sqlite", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut config = CrawlConfig::new(start.clone());
+        config.check_external = false;
+        config.check_resources = false;
+        config.strip_params = vec!["ref".into()];
+        let (mut store, summary) = crawl(config, Store::open(&path).unwrap()).await.unwrap();
+        run_checks(&mut store, summary.crawl_id).unwrap();
+        let crawl_id = summary.crawl_id;
+        let id = |path: &str| -> i64 {
+            store
+                .query_row("SELECT id FROM urls WHERE url = ?1", &seo_store::params![format!("{start}{}", &path[1..])])
+                .unwrap()
+                .unwrap()
+                .get(0)
+                .unwrap()
+        };
+        let from = |rows: &[seo_store::LinkRow]| -> Vec<(String, bool)> {
+            rows.iter().map(|row| (Url::parse(&row.from_url).unwrap().path().to_string(), row.nofollow)).collect()
+        };
+        let (total, rows) = store.inlinks(crawl_id, id("/b"), 0, 10).unwrap();
+        assert_eq!((total, from(&rows)), (2, vec![("/".into(), false), ("/a".into(), false)]));
+        let (_, rows) = store.inlinks(crawl_id, id("/a"), 0, 10).unwrap();
+        assert_eq!(from(&rows), [("/".to_string(), false), ("/b".to_string(), true)]);
+        let (total, broken) = store.broken_links(crawl_id, 0, 10).unwrap();
+        assert_eq!(total, 1);
+        assert_eq!((broken[0].to_url.ends_with("/gone"), broken[0].status), (true, 404));
+        drop(store);
+        let _ = std::fs::remove_file(&path);
     }
 
     fn summary_start(store: &Store) -> String {

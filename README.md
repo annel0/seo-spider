@@ -272,6 +272,13 @@ row opens its detail panel. The issues view lists every issue found by
 importance and opens the tab filtered to it. A tab exports as CSV with its
 filter, search and sort; the whole crawl as XLSX.
 
+Every URL's detail panel lists its inlinks (the pages that link or
+redirect to it, with their anchors, nofollow and how many links) and its
+outlinks (each with its target's status); a page in either list opens in
+turn. Broken links has every link whose target answered 4xx/5xx or
+nothing, grouped by target with the pages they sit on and their anchors,
+and exports as CSV for whoever fixes the pages.
+
 The settings form is built from the config's JSON Schema
 (`GET /api/config/schema`): every field of `CrawlConfig` shows, starting
 from the chosen preset, with what differs marked and a way back. The crawl

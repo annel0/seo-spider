@@ -996,6 +996,125 @@ input::placeholder {
   color: var(--ink-3);
 }
 
+/* Links of a URL: the status as a block, the page, its anchors under it. */
+
+.links {
+  display: flex;
+  flex-direction: column;
+}
+
+.links > button.ghost {
+  align-self: flex-start;
+  margin: 6px 10px;
+  color: var(--accent);
+}
+
+.link-line {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  align-items: stretch;
+  min-height: 36px;
+  box-shadow: 0 1px 0 var(--rule);
+}
+
+.link-line.bare {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.link-line .code {
+  display: grid;
+  place-items: center;
+  font-family: var(--figures);
+  font-weight: 600;
+  color: #fff;
+}
+
+.link-line .where {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 5px 12px;
+}
+
+.link-line .where > :first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+button.link {
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-weight: 400;
+}
+
+button.link:hover {
+  background: none;
+  text-decoration: underline;
+}
+
+.link-line .anchors {
+  font-size: 12px;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.link-line .badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 12px;
+}
+
+.badge-soft {
+  padding: 1px 6px;
+  font-size: 12px;
+  color: var(--ink-2);
+  background: var(--panel-3);
+  white-space: nowrap;
+}
+
+/* Broken links: each broken target, then the pages it sits on. */
+
+.broken-target {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  min-height: 34px;
+  background: var(--panel-2);
+  box-shadow: 0 1px 0 var(--rule);
+}
+
+.broken-target .code {
+  display: grid;
+  place-items: center;
+  font-family: var(--figures);
+  font-weight: 600;
+  color: #fff;
+}
+
+.broken-target .where {
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The pages a broken link sits on, under its target. */
+.broken-group .link-line {
+  padding-left: 48px;
+}
+
 .issue-row {
   display: grid;
   grid-template-columns: 4px minmax(0, 1fr);

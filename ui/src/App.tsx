@@ -10,6 +10,7 @@ import {
   type Sort,
   type TabDef,
 } from "./api";
+import { BrokenLinks } from "./components/BrokenLinks";
 import { DetailPanel } from "./components/DetailPanel";
 import { Icon } from "./components/Icon";
 import { IssuesView } from "./components/IssuesView";
@@ -35,6 +36,8 @@ export function App() {
   const [selected, setSelected] = useState<number | null>(null);
   const [tabs, setTabs] = useState<TabDef[]>([]);
   const [issues, setIssues] = useState<IssueCount[]>([]);
+  // Broken links of the crawl; null until its link graph exists.
+  const [broken, setBroken] = useState<number | null>(null);
   const [overview, setOverview] = useState<OverviewData | null>(null);
   const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -93,12 +96,17 @@ export function App() {
     if (crawlId === null) return;
     api.tabs(crawlId).then(setTabs).catch(() => undefined);
     api.issues(crawlId).then(setIssues).catch(() => undefined);
+    api
+      .brokenLinks(crawlId, 0, 1)
+      .then((page) => setBroken(page.ready ? page.total : null))
+      .catch(() => setBroken(null));
     api.overview(crawlId).then(setOverview).catch(() => undefined);
   }, [crawlId]);
 
   useEffect(() => {
     setTabs([]);
     setIssues([]);
+    setBroken(null);
     setOverview(null);
     setSelected(null);
     refresh();
@@ -221,7 +229,7 @@ export function App() {
         />
       ) : (
       <div className="main">
-        <Sidebar tabs={tabs} issues={issues} view={view} onView={open} />
+        <Sidebar tabs={tabs} issues={issues} broken={broken} view={view} onView={open} />
         <main className="work">
           {crawlId === null ? (
             <div className="empty">
@@ -234,6 +242,18 @@ export function App() {
             <Overview overview={overview} issues={issues} progress={progress} speed={speed} onOpen={openFilter} />
           ) : view.kind === "issues" ? (
             <IssuesView issues={issues} tabs={tabs} pages={overview?.pages ?? 0} onOpen={openFilter} />
+          ) : view.kind === "broken" ? (
+            <>
+              <BrokenLinks crawlId={crawlId} onSelect={setSelected} />
+              {selected !== null && (
+                <div className="detail">
+                  <button className="ghost" onClick={() => setSelected(null)} aria-label="Закрыть" style={{ position: "absolute", right: 4, top: 4 }}>
+                    <Icon name="cross" />
+                  </button>
+                  <DetailPanel urlId={selected} onOpen={setSelected} />
+                </div>
+              )}
+            </>
           ) : !tab ? (
             <div className="empty">Загрузка</div>
           ) : (
@@ -282,7 +302,7 @@ export function App() {
                   <button className="ghost" onClick={() => setSelected(null)} aria-label="Закрыть" style={{ position: "absolute", right: 4, top: 4 }}>
                     <Icon name="cross" />
                   </button>
-                  <DetailPanel urlId={selected} />
+                  <DetailPanel urlId={selected} onOpen={setSelected} />
                 </div>
               )}
             </>

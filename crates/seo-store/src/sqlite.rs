@@ -29,6 +29,8 @@ impl ToSql for Param<'_> {
 impl Sqlite {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
+        // Bulk inserts keep a statement per table and row count.
+        conn.set_prepared_statement_cache_capacity(128);
         Ok(Sqlite { conn })
     }
 
@@ -82,15 +84,20 @@ impl Backend for Sqlite {
         Ok(self.conn.last_insert_rowid())
     }
 
+    /// Many rows a statement, in counts that are powers of two (up to 256,
+    /// within SQLite's 32,766 variables) so that the few statements there
+    /// are stay prepared: per row, a statement costs more than the insert.
     fn insert_rows(&mut self, into: &Columns, rows: &[Vec<Param>]) -> Result<()> {
-        if rows.is_empty() {
-            return Ok(());
-        }
-        let marks = (1..=into.columns.len()).map(|at| format!("?{at}")).collect::<Vec<_>>().join(", ");
-        let mut statement =
-            self.conn.prepare_cached(&format!("INSERT INTO {} ({}) VALUES ({marks})", into.table, into.names()))?;
-        for row in rows {
-            statement.execute(rusqlite::params_from_iter(row))?;
+        let width = into.columns.len();
+        let most = (32_766 / width).min(256);
+        let mut start = 0;
+        while start < rows.len() {
+            let count = 1usize << (rows.len() - start).min(most).ilog2();
+            let group = format!("({})", vec!["?"; width].join(", "));
+            let sql = format!("INSERT INTO {} ({}) VALUES {}", into.table, into.names(), vec![group.as_str(); count].join(", "));
+            let mut statement = self.conn.prepare_cached(&sql)?;
+            statement.execute(rusqlite::params_from_iter(rows[start..start + count].iter().flatten()))?;
+            start += count;
         }
         Ok(())
     }
